@@ -4,9 +4,8 @@ const cheerio = require('cheerio');
 require('dotenv').config();
 
 const app = express();
-const PORT = 3000;
+const PORT = 3005; // කලින් බ්ලොක් වුණු නිසා 3005 දැම්මා. ඕන නම් 3000 කරන්න.
 
-// .env එකෙන් කුකීස් කියවීම
 const COOKIES = {
     "_ga_03W6RSCJV1": process.env._GA_03W6RSCJV1,
     "s9ifs0idfjlwfie32dekl": process.env.S9IFS0IDFJLVFIE32DEKL,
@@ -32,34 +31,52 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
-// එක පිටුවක විස්තර සූරාගන්නා පොදු Function එක
 async function scrapePageDetails(targetUrl) {
     try {
         const response = await axios.get(targetUrl, { headers: HEADERS, timeout: 10000 });
         const $ = cheerio.load(response.data);
 
-        const title = $('h1').text().trim() || "N/A";
-        
+        // 🎯 Title එක හරියටම ගන්න ක්‍රම කිහිපයක් (Fallbacks)
+        let title = "N/A";
+        if ($('.sheader .data h1').length > 0) {
+            title = $('.sheader .data h1').text().trim();
+        } else if ($('h1.entry-title').length > 0) {
+            title = $('h1.entry-title').text().trim();
+        } else if ($('h1').length > 0) {
+            title = $('h1').first().text().trim();
+        } else if ($('meta[property="og:title"]').length > 0) {
+            title = $('meta[property="og:title"]').attr('content');
+        }
+
+        // 🎯 Image එක හරියටම ගන්න ක්‍රම කිහිපයක්
         let image = "N/A";
-        const imgTag = $('.poster img') || $('.wp-post-image') || $('meta[property="og:image"]');
-        if (imgTag.length > 0) {
-            image = imgTag.attr('src') || imgTag.attr('data-src') || imgTag.attr('content') || "N/A";
+        if ($('.poster img').length > 0) {
+            image = $('.poster img').attr('src') || $('.poster img').attr('data-src');
+        } else if ($('.wp-post-image').length > 0) {
+            image = $('.wp-post-image').attr('src') || $('.wp-post-image').attr('data-src');
+        } else if ($('meta[property="og:image"]').length > 0) {
+            image = $('meta[property="og:image"]').attr('content');
         }
 
         const downloadLinks = [];
         $('a[href]').each((_, element) => {
             const href = $(element).attr('href');
-            const text = $(element).text().trim().toLowerCase();
+            const text = $(element).text().trim();
+            const textLower = text.toLowerCase();
 
-            if (
-                ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive', 'පිවිසෙන්න'].some(x => text.includes(x)) ||
-                ['download', 'go.sinhalasub', 'links', 'drive'].some(y => href.toLowerCase().includes(y))
-            ) {
-                if (!['telegram', 'facebook', 'twitter', 'whatsapp'].some(z => href.toLowerCase().includes(z))) {
-                    downloadLinks.push({
-                        label: $(element).text().trim() || "Download Link",
-                        link: href
-                    });
+            // අනවශ්‍ය /account/ වගේ ලින්ක්ස් සහ හිස් ලින්ක්ස් (#) අයින් කරමු
+            if (href && href !== "#" && !href.includes('/account/')) {
+                if (
+                    ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive', 'පිවිසෙන්න', 'links', 'payout', 'pixeldrain', 'server'].some(x => textLower.includes(x)) ||
+                    ['download', 'go.sinhalasub', 'links', 'drive'].some(y => href.toLowerCase().includes(y))
+                ) {
+                    // ෆේස්බුක්, වට්සැප් වගේ අනවශ්‍ය ලින්ක්ස් අයින් කිරීම
+                    if (!['facebook', 'twitter', 'whatsapp'].some(z => href.toLowerCase().includes(z))) {
+                        downloadLinks.push({
+                            label: text || "Download Link",
+                            link: href
+                        });
+                    }
                 }
             }
         });
@@ -80,7 +97,6 @@ app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
     const movieName = req.query.name;
 
-    // 1. ක්‍රමය: ?name= දුන්නොත් සර්ච් කරලා පළවෙනි එක විතරක් ගන්නවා
     if (movieName) {
         try {
             const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
@@ -89,7 +105,6 @@ app.get('/api/movie', async (req, res) => {
             
             let firstMovieUrl = null;
 
-            // සර්ච් රිසල්ට්ස් වලින් පළවෙනිම චිත්‍රපට ලින්ක් එක විතරක් හොයාගන්නවා
             $('article, .result-item article').each((_, element) => {
                 if (!firstMovieUrl) {
                     const titleTag = $(element).find('.details .title a') || $(element).find('h2 a') || $(element).find('a');
@@ -104,12 +119,9 @@ app.get('/api/movie', async (req, res) => {
                 return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found for this name." });
             }
 
-            // ඒ හොයාගත්ත පළවෙනි Original ලින්ක් එක ඇතුළට ගිහින් ඩේටා ටික ගන්නවා
-            console.log(`Found first link: ${firstMovieUrl}. Fetching details...`);
             const movieDetails = await scrapePageDetails(firstMovieUrl);
-
             if (!movieDetails) {
-                return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Failed to fetch original movie details." });
+                return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Failed to fetch movie details." });
             }
 
             return res.json({
@@ -123,7 +135,6 @@ app.get('/api/movie', async (req, res) => {
         }
     }
 
-    // 2. ක්‍රමය: ?url= දුන්නොත් කෙලින්ම ඒ පිටුවේ විස්තර ගන්නවා
     if (movieUrl) {
         const movieDetails = await scrapePageDetails(movieUrl);
         if (!movieDetails) {
@@ -145,5 +156,6 @@ app.get('/api/movie', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 API Server is running on http://localhost:${PORT}`);
+    console.log(`🚀 API Server is running on port ${PORT}`);
 });
+
