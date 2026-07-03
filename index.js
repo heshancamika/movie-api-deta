@@ -7,7 +7,6 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Root endpoint
 app.get('/', (req, res) => {
     res.json({
         status: true,
@@ -16,7 +15,6 @@ app.get('/', (req, res) => {
     });
 });
 
-// ✅ Movie API Endpoint - URL එකෙන් වැඩ කරනවා
 app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
 
@@ -27,7 +25,6 @@ app.get('/api/movie', async (req, res) => {
         });
     }
 
-    // URL එක හරිද කියලා check කරන්න
     if (!movieUrl.includes('sinhalasub.lk/movies/')) {
         return res.status(400).json({
             status: false,
@@ -38,7 +35,6 @@ app.get('/api/movie', async (req, res) => {
     console.log(`📥 Fetching: ${movieUrl}`);
 
     try {
-        // Movie page එකට request එකක් යවන්න
         const response = await axios.get(movieUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -48,73 +44,128 @@ app.get('/api/movie', async (req, res) => {
         });
 
         const $ = cheerio.load(response.data);
-
-        // Movie title එක ගන්න
-        const title = $('h1.entry-title').text().trim() || $('h1').first().text().trim() || 'Unknown Title';
-
-        // 🔥 Download links හොයාගන්න - ඔබ දුන් page එකට හරියටම ගැලපෙන විදියට
         const downloadLinks = [];
 
-        // 1. "Links" table එකෙන් data ගන්න (ඔබ දුන් page එකේ තියෙන table එක)
+        // ✅ හරියටම Movie Title එක ගන්න
+        const title = $('h1.entry-title').text().trim() || 
+                      $('h1').first().text().trim() || 
+                      'Unknown Title';
+
+        // 🔥 නිවැරදිව Table එකෙන් Download Links ගන්න
+        // "Links" කියන heading එකට පස්සේ තියෙන tables හොයන්න
+        let foundLinks = false;
+
+        // සියලුම tables හරහා යන්න
         $('table').each((i, table) => {
             const rows = $(table).find('tr');
+            
             rows.each((j, row) => {
                 const cols = $(row).find('td');
-                if (cols.length >= 3) {
+                
+                // අවම වශයෙන් columns 2ක් තියෙන rows විතරක් ගන්න
+                if (cols.length >= 2) {
                     const quality = $(cols[0]).text().trim();
                     const size = $(cols[1]).text().trim();
-                    // Clicks එක තමයි 3rd column එක
                     
-                    // මෙම row එකට අදාළ download link එක හොයන්න
-                    // බොහෝ විට link එක තියෙන්නේ quality column එකේ <a> tag එකක් විදියට
-                    const link = $(cols[0]).find('a').attr('href') || 
-                                 $(cols[1]).find('a').attr('href') ||
-                                 $(row).find('a').attr('href');
+                    // Quality එකේ "FHD", "HD", "SD", "1080p", "720p", "480p" වගේ keywords තියෙනවද check කරන්න
+                    const qualityMatch = quality.match(/(FHD|HD|SD|1080p|720p|480p)/i);
                     
-                    if (link && (link.includes('cdn.sinhalasub.net') || link.includes('download'))) {
-                        downloadLinks.push({
-                            quality: quality || 'Unknown',
-                            size: size || 'Unknown',
-                            download_url: link
-                        });
+                    if (qualityMatch && size) {
+                        // මෙම row එකට අදාළ download link එක හොයන්න
+                        // Link එක තියෙන්නේ මුල් column එකේ <a> tag එකක් විදියට හෝ මුලු row එකම clickable එකක් විදියට
+                        let downloadUrl = null;
+                        
+                        // Check if there's an <a> tag in the quality column
+                        const linkInQuality = $(cols[0]).find('a').attr('href');
+                        if (linkInQuality && linkInQuality.includes('cdn.sinhalasub.net')) {
+                            downloadUrl = linkInQuality;
+                        }
+                        
+                        // Check if there's an <a> tag in the size column
+                        if (!downloadUrl) {
+                            const linkInSize = $(cols[1]).find('a').attr('href');
+                            if (linkInSize && linkInSize.includes('cdn.sinhalasub.net')) {
+                                downloadUrl = linkInSize;
+                            }
+                        }
+                        
+                        // Check if the entire row has an <a> tag
+                        if (!downloadUrl) {
+                            const rowLink = $(row).find('a').attr('href');
+                            if (rowLink && rowLink.includes('cdn.sinhalasub.net')) {
+                                downloadUrl = rowLink;
+                            }
+                        }
+                        
+                        // If we found a download URL, add it to the list
+                        if (downloadUrl) {
+                            downloadLinks.push({
+                                quality: quality || 'Unknown',
+                                size: size || 'Unknown',
+                                download_url: downloadUrl
+                            });
+                            foundLinks = true;
+                        }
                     }
                 }
             });
         });
 
-        // 2. ඉහතින් නොලැබුනොත්, all links වලින් download links හොයන්න
-        if (downloadLinks.length === 0) {
+        // ඉහතින් නොලැබුනොත්, global search එකක් කරන්න
+        if (!foundLinks) {
+            console.log('⚠️ Table parsing failed, trying global search...');
+            
+            // All links with cdn.sinhalasub.net
             $('a[href*="cdn.sinhalasub.net"]').each((i, el) => {
                 const url = $(el).attr('href');
                 const text = $(el).text().trim();
                 
-                // Quality and size extract කරන්න
-                const qualityMatch = text.match(/(FHD 1080p|HD 720p|SD 480p|1080p|720p|480p|FHD|HD|SD)/i);
+                // Try to extract quality and size from the text
+                const qualityMatch = text.match(/(FHD|HD|SD|1080p|720p|480p)/i);
                 const sizeMatch = text.match(/([\d.]+)\s*(GB|MB)/i);
                 
-                downloadLinks.push({
-                    quality: qualityMatch ? qualityMatch[0] : 'Unknown',
-                    size: sizeMatch ? `${sizeMatch[1]} ${sizeMatch[2]}` : 'Unknown',
-                    download_url: url
-                });
-            });
-        }
-
-        // 3. තවමත් නොලැබුනොත්, all links check කරන්න
-        if (downloadLinks.length === 0) {
-            $('a').each((i, el) => {
-                const href = $(el).attr('href');
-                if (href && (href.includes('cdn.sinhalasub.net') || href.includes('/download/'))) {
+                // Check if this link is in a table context
+                const parent = $(el).closest('td');
+                if (parent.length > 0) {
+                    const siblings = parent.siblings();
+                    let quality = qualityMatch ? qualityMatch[0] : 'Unknown';
+                    let size = 'Unknown';
+                    
+                    // Try to get size from adjacent cells
+                    siblings.each((k, sibling) => {
+                        const text = $(sibling).text().trim();
+                        if (text.match(/([\d.]+)\s*(GB|MB)/i)) {
+                            size = text;
+                        }
+                    });
+                    
                     downloadLinks.push({
-                        quality: 'Unknown',
-                        size: 'Unknown',
-                        download_url: href
+                        quality: quality,
+                        size: size,
+                        download_url: url
+                    });
+                } else {
+                    // Not in a table, just add as is
+                    downloadLinks.push({
+                        quality: qualityMatch ? qualityMatch[0] : 'Unknown',
+                        size: sizeMatch ? `${sizeMatch[1]} ${sizeMatch[2]}` : 'Unknown',
+                        download_url: url
                     });
                 }
             });
         }
 
-        // ✅ Success response එක
+        // Remove duplicates (same download URL)
+        const uniqueLinks = [];
+        const seenUrls = new Set();
+        downloadLinks.forEach(item => {
+            if (!seenUrls.has(item.download_url)) {
+                seenUrls.add(item.download_url);
+                uniqueLinks.push(item);
+            }
+        });
+
+        // ✅ Success response
         res.json({
             status: true,
             owner: '@KingPoddaModz',
@@ -122,7 +173,7 @@ app.get('/api/movie', async (req, res) => {
                 title: title,
                 url: movieUrl
             },
-            result: downloadLinks.length > 0 ? downloadLinks : [
+            result: uniqueLinks.length > 0 ? uniqueLinks : [
                 {
                     quality: 'N/A',
                     size: 'N/A',
@@ -141,7 +192,6 @@ app.get('/api/movie', async (req, res) => {
     }
 });
 
-// Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Movie API running on http://0.0.0.0:${PORT}`);
     console.log(`📌 Example: http://localhost:${PORT}/api/movie?url=https://sinhalasub.lk/movies/spider-man-no-way-home-2021-sinhala-subtitles/`);
