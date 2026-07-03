@@ -5,31 +5,19 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
-const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ Middleware
+// Middleware
 app.use(helmet());
 app.use(compression());
 app.use(cors());
 app.use(morgan('combined'));
 app.use(express.json());
 
-// ✅ Rate Limiting (එක් IP එකකින් විනාඩියකට requests 10ක් විතරයි)
-const limiter = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 10,
-    message: {
-        status: false,
-        error: 'Too many requests. Please try again later.'
-    }
-});
-app.use('/api/', limiter);
-
-// ✅ Root endpoint
+// Root endpoint
 app.get('/', (req, res) => {
     res.json({
         status: true,
@@ -41,7 +29,7 @@ app.get('/', (req, res) => {
     });
 });
 
-// ✅ Movie API endpoint
+// Movie API endpoint
 app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
 
@@ -75,12 +63,12 @@ app.get('/api/movie', async (req, res) => {
         const $ = cheerio.load(response.data);
         const downloadLinks = [];
 
-        // 🎯 Movie Title
+        // Movie Title
         const title = $('h1.entry-title').text().trim() || 
                       $('h1').first().text().trim() || 
                       'Unknown Title';
 
-        // 🔥 Method 1: cdn.sinhalasub.net links
+        // Method 1: cdn.sinhalasub.net links
         $('a[href*="cdn.sinhalasub.net"]').each((i, el) => {
             const href = $(el).attr('href');
             let quality = 'Unknown';
@@ -112,7 +100,7 @@ app.get('/api/movie', async (req, res) => {
             });
         });
 
-        // 🔥 Method 2: Table links
+        // Method 2: Table links
         if (downloadLinks.length === 0) {
             $('table').each((i, table) => {
                 const rows = $(table).find('tr');
@@ -134,7 +122,7 @@ app.get('/api/movie', async (req, res) => {
             });
         }
 
-        // 🔥 Method 3: Fallback
+        // Method 3: Fallback
         if (downloadLinks.length === 0) {
             $('a').each((i, el) => {
                 const href = $(el).attr('href');
@@ -184,7 +172,7 @@ app.get('/api/movie', async (req, res) => {
     }
 });
 
-// ✅ 404 Handler
+// 404 Handler
 app.use((req, res) => {
     res.status(404).json({
         status: false,
@@ -192,9 +180,8 @@ app.use((req, res) => {
     });
 });
 
-// ✅ Server start
+// Server start
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Movie API running on http://0.0.0.0:${PORT}`);
     console.log(`📌 Example: http://localhost:${PORT}/api/movie?url=https://sinhalasub.lk/movies/spider-man-no-way-home-2021-sinhala-subtitles/`);
-    console.log(`🔒 Rate Limit: 10 requests per minute per IP`);
 });
