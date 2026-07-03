@@ -1,0 +1,17 @@
+{
+  "name": "sinhalasub-movie-downloader",
+  "version": "1.0.0",
+  "description": "sinhalasub.lk වෙතින් Movie Download URLs ලබාගැනීමට Node.js App එකක්",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "movie": "node index.js"
+  },
+  "dependencies": {
+    "@sl-code-lords/movie-api": "^1.0.0",
+    "mrnima-moviedl": "^1.0.0",
+    "@omindudissanayaka/movie-api": "^1.0.0"
+  },
+  "author": "Your Name",
+  "license": "MIT"
+}
