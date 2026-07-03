@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
 require('dotenv').config();
 
 const app = express();
-const PORT = 3005; // කලින් බ්ලොක් වුණු නිසා 3005 දැම්මා. ඕන නම් 3000 කරන්න.
+const PORT = 3005; 
 
 const COOKIES = {
     "_ga_03W6RSCJV1": process.env._GA_03W6RSCJV1,
@@ -31,48 +31,68 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
+// 🎯 පිටුව ඇතුළේ තියෙන ඇත්තම ලින්ක් එක අරන්, ඒක "කෙලින්ම ඩවුන්ලෝඩ් වන" ලින්ක් එකක් බවට හරවන Function එක
+async function getDirectDownloadUrl(redirectUrl) {
+    try {
+        if (!redirectUrl.includes('/links/')) return redirectUrl;
+
+        const res = await axios.get(redirectUrl, { headers: HEADERS, timeout: 6000 });
+        const $ = cheerio.load(res.data);
+        
+        let finalUrl = null;
+        
+        $('a').each((_, el) => {
+            const href = $(el).attr('href');
+            if (href && !href.includes('sinhalasub.lk') && (href.includes('pixeldrain') || href.includes('file') || href.includes('drive') || href.includes('http'))) {
+                finalUrl = href;
+            }
+        });
+
+        if (finalUrl) {
+            // 🎯 Pixeldrain පිටුවට නොගොස් කෙලින්ම ඩවුන්ලෝඩ් වීම ආරම්භ කිරීමට ලින්ක් එක වෙනස් කිරීම
+            if (finalUrl.includes('pixeldrain.com/u/')) {
+                finalUrl = finalUrl.replace('pixeldrain.com/u/', 'pixeldrain.com/api/file/') + '?download';
+            }
+            return finalUrl;
+        }
+
+        return redirectUrl;
+    } catch (e) {
+        return redirectUrl;
+    }
+}
+
 async function scrapePageDetails(targetUrl) {
     try {
         const response = await axios.get(targetUrl, { headers: HEADERS, timeout: 10000 });
         const $ = cheerio.load(response.data);
 
-        // 🎯 Title එක හරියටම ගන්න ක්‍රම කිහිපයක් (Fallbacks)
         let title = "N/A";
-        if ($('.sheader .data h1').length > 0) {
-            title = $('.sheader .data h1').text().trim();
-        } else if ($('h1.entry-title').length > 0) {
-            title = $('h1.entry-title').text().trim();
-        } else if ($('h1').length > 0) {
-            title = $('h1').first().text().trim();
-        } else if ($('meta[property="og:title"]').length > 0) {
-            title = $('meta[property="og:title"]').attr('content');
+        let rawTitle = $('title').text().trim();
+        if (rawTitle) {
+            title = rawTitle.split(' - ')[0].trim();
         }
 
-        // 🎯 Image එක හරියටම ගන්න ක්‍රම කිහිපයක්
         let image = "N/A";
-        if ($('.poster img').length > 0) {
+        if ($('meta[property="og:image"]').length > 0) {
+            image = $('meta[property="og:image"]').attr('content').trim();
+        } else if ($('.poster img').length > 0) {
             image = $('.poster img').attr('src') || $('.poster img').attr('data-src');
-        } else if ($('.wp-post-image').length > 0) {
-            image = $('.wp-post-image').attr('src') || $('.wp-post-image').attr('data-src');
-        } else if ($('meta[property="og:image"]').length > 0) {
-            image = $('meta[property="og:image"]').attr('content');
         }
 
-        const downloadLinks = [];
+        const downloadLinksRaw = [];
         $('a[href]').each((_, element) => {
             const href = $(element).attr('href');
             const text = $(element).text().trim();
             const textLower = text.toLowerCase();
 
-            // අනවශ්‍ය /account/ වගේ ලින්ක්ස් සහ හිස් ලින්ක්ස් (#) අයින් කරමු
-            if (href && href !== "#" && !href.includes('/account/')) {
+            if (href && href !== "#" && !href.startsWith('#') && !href.includes('/account/')) {
                 if (
                     ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive', 'පිවිසෙන්න', 'links', 'payout', 'pixeldrain', 'server'].some(x => textLower.includes(x)) ||
                     ['download', 'go.sinhalasub', 'links', 'drive'].some(y => href.toLowerCase().includes(y))
                 ) {
-                    // ෆේස්බුක්, වට්සැප් වගේ අනවශ්‍ය ලින්ක්ස් අයින් කිරීම
-                    if (!['facebook', 'twitter', 'whatsapp'].some(z => href.toLowerCase().includes(z))) {
-                        downloadLinks.push({
+                    if (!['facebook', 'twitter', 'whatsapp', 'telegram'].some(z => href.toLowerCase().includes(z))) {
+                        downloadLinksRaw.push({
                             label: text || "Download Link",
                             link: href
                         });
@@ -81,14 +101,25 @@ async function scrapePageDetails(targetUrl) {
             }
         });
 
+        const finalDownloadLinks = [];
+        console.log(`Resolving ${downloadLinksRaw.length} links to Direct Downloads...`);
+        
+        for (const item of downloadLinksRaw) {
+            const directLink = await getDirectDownloadUrl(item.link);
+            finalDownloadLinks.push({
+                label: item.label,
+                link: directLink
+            });
+        }
+
         return {
             title: title,
             image: image,
             url: targetUrl,
-            download_links: downloadLinks
+            download_links: finalDownloadLinks
         };
     } catch (err) {
-        console.error(`Scraping failed for ${targetUrl}: ${err.message}`);
+        console.error(`Scraping failed: ${err.message}`);
         return null;
     }
 }
@@ -116,46 +147,26 @@ app.get('/api/movie', async (req, res) => {
             });
 
             if (!firstMovieUrl) {
-                return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found for this name." });
+                return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found." });
             }
 
             const movieDetails = await scrapePageDetails(firstMovieUrl);
-            if (!movieDetails) {
-                return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Failed to fetch movie details." });
-            }
-
-            return res.json({
-                status: true,
-                owner: "@KingPoddaModz",
-                result: [movieDetails]
-            });
+            return res.json({ status: true, owner: "@KingPoddaModz", result: [movieDetails] });
 
         } catch (error) {
-            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Search failed: " + error.message });
+            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: error.message });
         }
     }
 
     if (movieUrl) {
         const movieDetails = await scrapePageDetails(movieUrl);
-        if (!movieDetails) {
-            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Failed to fetch URL details." });
-        }
-
-        return res.json({
-            status: true,
-            owner: "@KingPoddaModz",
-            result: [movieDetails]
-        });
+        return res.json({ status: true, owner: "@KingPoddaModz", result: [movieDetails] });
     }
 
-    return res.status(400).json({
-        status: false,
-        owner: "@KingPoddaModz",
-        error: "Please provide either 'url' or 'name' parameter."
-    });
+    return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters." });
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 API Server is running on port ${PORT}`);
+    console.log(`🚀 API Server running on port ${PORT}`);
 });
 
