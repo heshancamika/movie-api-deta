@@ -31,7 +31,6 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
-// 🎯 පිටුව ඇතුළේ තියෙන ඇත්තම ලින්ක් එක අරන්, ඒක "කෙලින්ම ඩවුන්ලෝඩ් වන" ලින්ක් එකක් බවට හරවන Function එක
 async function getDirectDownloadUrl(redirectUrl) {
     try {
         if (!redirectUrl.includes('/links/')) return redirectUrl;
@@ -49,7 +48,6 @@ async function getDirectDownloadUrl(redirectUrl) {
         });
 
         if (finalUrl) {
-            // 🎯 Pixeldrain පිටුවට නොගොස් කෙලින්ම ඩවුන්ලෝඩ් වීම ආරම්භ කිරීමට ලින්ක් එක වෙනස් කිරීම
             if (finalUrl.includes('pixeldrain.com/u/')) {
                 finalUrl = finalUrl.replace('pixeldrain.com/u/', 'pixeldrain.com/api/file/') + '?download';
             }
@@ -60,6 +58,14 @@ async function getDirectDownloadUrl(redirectUrl) {
     } catch (e) {
         return redirectUrl;
     }
+}
+
+function detectQuality(text, link) {
+    const fullText = (text + " " + link).toLowerCase();
+    if (fullText.includes('1080p') || fullText.includes('1080')) return '1080p';
+    if (fullText.includes('720p') || fullText.includes('720')) return '720p';
+    if (fullText.includes('480p') || fullText.includes('480')) return '480p';
+    return 'HD / Other';
 }
 
 async function scrapePageDetails(targetUrl) {
@@ -88,10 +94,10 @@ async function scrapePageDetails(targetUrl) {
 
             if (href && href !== "#" && !href.startsWith('#') && !href.includes('/account/')) {
                 if (
-                    ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive', 'පිවිසෙන්න', 'links', 'payout', 'pixeldrain', 'server'].some(x => textLower.includes(x)) ||
+                    ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive', 'links', 'payout', 'pixeldrain', 'server'].some(x => textLower.includes(x)) ||
                     ['download', 'go.sinhalasub', 'links', 'drive'].some(y => href.toLowerCase().includes(y))
                 ) {
-                    if (!['facebook', 'twitter', 'whatsapp', 'telegram'].some(z => href.toLowerCase().includes(z))) {
+                    if (!['facebook', 'twitter', 'whatsapp'].some(z => href.toLowerCase().includes(z))) {
                         downloadLinksRaw.push({
                             label: text || "Download Link",
                             link: href
@@ -101,13 +107,32 @@ async function scrapePageDetails(targetUrl) {
             }
         });
 
-        const finalDownloadLinks = [];
-        console.log(`Resolving ${downloadLinksRaw.length} links to Direct Downloads...`);
+        const direct_downloads = [];
+        const telegram_links = [];
+        let subtitle_link = "N/A";
+
+        console.log(`Resolving and structuring ${downloadLinksRaw.length} links...`);
         
         for (const item of downloadLinksRaw) {
+            if (item.link.includes('t.me') || item.label.toLowerCase().includes('telegram') || item.label.toLowerCase().includes('telagram')) {
+                telegram_links.push({
+                    server: item.label,
+                    link: item.link
+                });
+                continue;
+            }
+
+            if (item.label.toLowerCase().includes('subtitle') || item.link.includes('.zip')) {
+                subtitle_link = item.link;
+                continue;
+            }
+
             const directLink = await getDirectDownloadUrl(item.link);
-            finalDownloadLinks.push({
-                label: item.label,
+            const quality = detectQuality(item.label, directLink);
+
+            direct_downloads.push({
+                server: item.label,
+                quality: quality,
                 link: directLink
             });
         }
@@ -116,7 +141,9 @@ async function scrapePageDetails(targetUrl) {
             title: title,
             image: image,
             url: targetUrl,
-            download_links: finalDownloadLinks
+            direct_downloads: direct_downloads,
+            telegram_links: telegram_links,
+            subtitle: subtitle_link
         };
     } catch (err) {
         console.error(`Scraping failed: ${err.message}`);
@@ -128,39 +155,58 @@ app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
     const movieName = req.query.name;
 
+    // 🎯 1. ක්‍රමය: නමෙන් සෙවීම (දැන් හරියටම Tags ටික අප්ඩේට් කරලා තියෙන්නේ)
     if (movieName) {
         try {
             const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
+            console.log(`Searching for name: ${movieName} -> URL: ${searchUrl}`);
+            
             const response = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
             const $ = cheerio.load(response.data);
             
             let firstMovieUrl = null;
 
-            $('article, .result-item article').each((_, element) => {
+            // 🛠️ FIX: Sinhalasub සර්ච් ලිස්ට් එකේ තියෙන ඇත්තම Selectors (a ටැග් එක කෙලින්ම ගන්නවා)
+            $('.result-item article, article, .movies-list article').each((_, element) => {
                 if (!firstMovieUrl) {
-                    const titleTag = $(element).find('.details .title a') || $(element).find('h2 a') || $(element).find('a');
-                    const href = titleTag.attr('href');
+                    // ලිපියේ තියෙන පළවෙනිම චිත්‍රපට ලින්ක් එක සෙවීම
+                    const href = $(element).find('a').attr('href');
                     if (href && href.includes('/movies/')) {
                         firstMovieUrl = href;
                     }
                 }
             });
 
+            // Fallback: සයිට් එකේ ඕනෑම තැනක තියෙන පළමු /movies/ ලින්ක් එක අල්ලන්න
+            if (!firstMovieUrl) {
+                $('a[href*="/movies/"]').each((_, el) => {
+                    if (!firstMovieUrl) {
+                        const href = $(el).attr('href');
+                        // මුල් පිටුවේ ලින්ක්ස් නොවී වෙනම චිත්‍රපට ලින්ක් එකක්දැයි බැලීම
+                        if (href && href !== "https://sinhalasub.lk/movies/") {
+                            firstMovieUrl = href;
+                        }
+                    }
+                });
+            }
+
             if (!firstMovieUrl) {
                 return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found." });
             }
 
+            console.log(`Found First Movie URL: ${firstMovieUrl}`);
             const movieDetails = await scrapePageDetails(firstMovieUrl);
-            return res.json({ status: true, owner: "@KingPoddaModz", result: [movieDetails] });
+            return res.json({ status: true, owner: "@KingPoddaModz", result: movieDetails });
 
         } catch (error) {
             return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: error.message });
         }
     }
 
+    // 2. ක්‍රමය: URL එකෙන් සෙවීම
     if (movieUrl) {
         const movieDetails = await scrapePageDetails(movieUrl);
-        return res.json({ status: true, owner: "@KingPoddaModz", result: [movieDetails] });
+        return res.json({ status: true, owner: "@KingPoddaModz", result: movieDetails });
     }
 
     return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters." });
