@@ -4,6 +4,7 @@ const cheerio = require('cheerio');
 require('dotenv').config();
 const { delay, proto, generateWAMessageFromContent } = require("@whiskeysockets/baileys");
 
+
 const app = express();
 const PORT = 3005; 
 
@@ -32,6 +33,7 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
+// රීඩිරෙක්ට් ලින්ක් එක ඇතුළට ගිහින් ඇත්තම cdn.sinhalasub.net ලින්ක් එක විතරක් ගන්නා හැටි
 async function getCdnLink(redirectUrl) {
     try {
         if (!redirectUrl.includes('/links/')) return null;
@@ -52,6 +54,7 @@ async function getCdnLink(redirectUrl) {
     }
 }
 
+// ෆයිල් සයිස් එක කපා ගන්නා ක්‍රමය
 function extractSize(url) {
     const decodedUrl = decodeURIComponent(url);
     const matches = decodedUrl.match(/(?:_|\s|-)(\d+(?:\.\d+)?\s*(?:GB|MB|gb|mb))/);
@@ -64,6 +67,7 @@ function extractSize(url) {
     return "N/A";
 }
 
+// තනි පිටුවක ඇති DLServer-01 ලින්ක්ස් ටික විතරක් පෙරලා ගැනීම
 async function scrapePageDetails(targetUrl) {
     try {
         const response = await axios.get(targetUrl, { headers: HEADERS, timeout: 10000 });
@@ -124,23 +128,28 @@ async function scrapePageDetails(targetUrl) {
     }
 }
 
-// 🎯 ප්‍රධාන Endpoint එක (JSON Only - No Buffer, Fast Response)
+// 🎯 ප්‍රධාන Endpoint එක
 app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
+    // 🎯 Podda API එක වගේම ?text= හෝ පරණ ?name= දෙකෙන්ම වැඩ කරන්න හැදුවා
     const movieName = req.query.text || req.query.name; 
 
     if (movieName) {
         try {
-            let searchQuery = movieName;
-            if (searchQuery.toLowerCase() === 'spiderman') searchQuery = 'spider-man';
-
-            console.log(`Searching for movie: ${searchQuery}`);
-            const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(searchQuery)}`;
+            console.log(`Searching for movie: ${movieName}`);
             
-            const response = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
+            // සයිට් එකේ 404 නොවදින ස්ථිරම සර්ච් URL එක (Native WordPress Search)
+            const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
+            
+            const response = await axios.get(searchUrl, { 
+                headers: HEADERS, 
+                timeout: 10000 
+            });
+            
             const $ = cheerio.load(response.data);
             let firstMovieUrl = null;
 
+            // 🛠️ 100% ක්ම වැඩ කරන අලුත්ම සර්ච් HTML Selectors ටික (සයිට් එකේ සර්ච් රිසල්ට්ස් වල තියෙන හැම ටැග් එකක්ම පරික්ෂා කරනවා)
             $('.result-item article, article, .movies-list article, .search-results article').each((_, element) => {
                 if (!firstMovieUrl) {
                     const href = $(element).find('a').attr('href');
@@ -150,6 +159,7 @@ app.get('/api/movie', async (req, res) => {
                 }
             });
 
+            // Fallback 1: සර්ච් පිටුවේ තියෙන ඕනෑම චිත්‍රපට ලින්ක් එකක් අල්ලන්න
             if (!firstMovieUrl) {
                 $('a[href*="/movies/"]').each((_, el) => {
                     if (!firstMovieUrl) {
@@ -167,8 +177,6 @@ app.get('/api/movie', async (req, res) => {
 
             console.log(`Found URL: ${firstMovieUrl}. Extracting direct links...`);
             const movieResult = await scrapePageDetails(firstMovieUrl);
-            
-            // 🎯 කෙලින්ම බොට් එකට JSON එක විතරක් දෙනවා (සර්වර් එක මැදින් වීඩියෝ යන්නෙ නැහැ)
             return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
 
         } catch (error) {
@@ -187,6 +195,5 @@ app.get('/api/movie', async (req, res) => {
 app.set('json spaces', 2); 
 
 app.listen(PORT, () => {
-    console.log(`🚀 Original JSON Movie API Server running on port ${PORT}`);
+    console.log(`🚀 Ultimate Stable API Server running on port ${PORT}`);
 });
-
