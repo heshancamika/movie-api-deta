@@ -21,163 +21,133 @@ app.get('/api/movie', async (req, res) => {
     if (!movieUrl) {
         return res.status(400).json({
             status: false,
-            error: 'Missing "url" parameter. Example: /api/movie?url=https://sinhalasub.lk/movies/spider-man-no-way-home-2021-sinhala-subtitles/'
-        });
-    }
-
-    if (!movieUrl.includes('sinhalasub.lk/movies/')) {
-        return res.status(400).json({
-            status: false,
-            error: 'Invalid URL. Must be a sinhalasub.lk movie page.'
+            error: 'Missing "url" parameter.'
         });
     }
 
     console.log(`📥 Fetching: ${movieUrl}`);
 
     try {
+        // 1. Movie page එකේ HTML එක ගන්න
         const response = await axios.get(movieUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            },
-            timeout: 15000
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
         });
 
         const $ = cheerio.load(response.data);
+        
+        // 2. Movie ID එක හොයාගන්න (URL එකෙන්)
+        const movieId = movieUrl.match(/\/movies\/([^\/]+)/)?.[1] || '';
+        console.log(`📌 Movie ID: ${movieId}`);
+
+        // 3. Title එක ගන්න
+        const title = $('h1.entry-title').text().trim() || 'Unknown Title';
+
+        // 4. 🔥 නිවැරදිව Download Links හොයාගන්න - නව ක්‍රමය
         const downloadLinks = [];
 
-        // ✅ හරියටම Movie Title එක ගන්න
-        const title = $('h1.entry-title').text().trim() || 
-                      $('h1').first().text().trim() || 
-                      'Unknown Title';
-
-        // 🔥 නිවැරදිව Table එකෙන් Download Links ගන්න
-        // "Links" කියන heading එකට පස්සේ තියෙන tables හොයන්න
-        let foundLinks = false;
-
-        // සියලුම tables හරහා යන්න
-        $('table').each((i, table) => {
-            const rows = $(table).find('tr');
+        // මෙම page එකේ තියෙන සියලුම <a> tags check කරන්න
+        $('a').each((i, el) => {
+            const href = $(el).attr('href');
+            const text = $(el).text().trim();
             
-            rows.each((j, row) => {
-                const cols = $(row).find('td');
+            // cdn.sinhalasub.net links හොයන්න
+            if (href && href.includes('cdn.sinhalasub.net')) {
+                // Quality එක හොයාගන්න (text එකෙන් හෝ parent element එකෙන්)
+                let quality = 'Unknown';
+                let size = 'Unknown';
                 
-                // අවම වශයෙන් columns 2ක් තියෙන rows විතරක් ගන්න
-                if (cols.length >= 2) {
-                    const quality = $(cols[0]).text().trim();
-                    const size = $(cols[1]).text().trim();
-                    
-                    // Quality එකේ "FHD", "HD", "SD", "1080p", "720p", "480p" වගේ keywords තියෙනවද check කරන්න
-                    const qualityMatch = quality.match(/(FHD|HD|SD|1080p|720p|480p)/i);
-                    
-                    if (qualityMatch && size) {
-                        // මෙම row එකට අදාළ download link එක හොයන්න
-                        // Link එක තියෙන්නේ මුල් column එකේ <a> tag එකක් විදියට හෝ මුලු row එකම clickable එකක් විදියට
-                        let downloadUrl = null;
-                        
-                        // Check if there's an <a> tag in the quality column
-                        const linkInQuality = $(cols[0]).find('a').attr('href');
-                        if (linkInQuality && linkInQuality.includes('cdn.sinhalasub.net')) {
-                            downloadUrl = linkInQuality;
-                        }
-                        
-                        // Check if there's an <a> tag in the size column
-                        if (!downloadUrl) {
-                            const linkInSize = $(cols[1]).find('a').attr('href');
-                            if (linkInSize && linkInSize.includes('cdn.sinhalasub.net')) {
-                                downloadUrl = linkInSize;
-                            }
-                        }
-                        
-                        // Check if the entire row has an <a> tag
-                        if (!downloadUrl) {
-                            const rowLink = $(row).find('a').attr('href');
-                            if (rowLink && rowLink.includes('cdn.sinhalasub.net')) {
-                                downloadUrl = rowLink;
-                            }
-                        }
-                        
-                        // If we found a download URL, add it to the list
-                        if (downloadUrl) {
-                            downloadLinks.push({
-                                quality: quality || 'Unknown',
-                                size: size || 'Unknown',
-                                download_url: downloadUrl
-                            });
-                            foundLinks = true;
-                        }
-                    }
-                }
-            });
-        });
-
-        // ඉහතින් නොලැබුනොත්, global search එකක් කරන්න
-        if (!foundLinks) {
-            console.log('⚠️ Table parsing failed, trying global search...');
-            
-            // All links with cdn.sinhalasub.net
-            $('a[href*="cdn.sinhalasub.net"]').each((i, el) => {
-                const url = $(el).attr('href');
-                const text = $(el).text().trim();
-                
-                // Try to extract quality and size from the text
-                const qualityMatch = text.match(/(FHD|HD|SD|1080p|720p|480p)/i);
-                const sizeMatch = text.match(/([\d.]+)\s*(GB|MB)/i);
-                
-                // Check if this link is in a table context
-                const parent = $(el).closest('td');
-                if (parent.length > 0) {
-                    const siblings = parent.siblings();
-                    let quality = qualityMatch ? qualityMatch[0] : 'Unknown';
-                    let size = 'Unknown';
-                    
-                    // Try to get size from adjacent cells
-                    siblings.each((k, sibling) => {
+                // Check if there's a parent td with quality/size
+                const parentTd = $(el).closest('td');
+                if (parentTd.length > 0) {
+                    const siblings = parentTd.siblings();
+                    siblings.each((j, sibling) => {
                         const text = $(sibling).text().trim();
+                        if (text.match(/(FHD|HD|SD|1080p|720p|480p)/i)) {
+                            quality = text;
+                        }
                         if (text.match(/([\d.]+)\s*(GB|MB)/i)) {
                             size = text;
                         }
                     });
-                    
-                    downloadLinks.push({
-                        quality: quality,
-                        size: size,
-                        download_url: url
+                }
+                
+                downloadLinks.push({
+                    quality: quality,
+                    size: size,
+                    download_url: href
+                });
+            }
+        });
+
+        // 5. තවමත් links නැතිනම්, API එකෙන් ගන්න උත්සාහ කරන්න
+        if (downloadLinks.length === 0) {
+            console.log('⚠️ No direct links found, trying API method...');
+            
+            // sinhalasub.lk එකේ internal API එක use කරන්න උත්සාහ කරන්න
+            const apiUrl = `https://sinhalasub.lk/wp-json/movie/v1/get-downloads?id=${movieId}`;
+            try {
+                const apiResponse = await axios.get(apiUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Referer': movieUrl
+                    }
+                });
+                
+                if (apiResponse.data && apiResponse.data.downloads) {
+                    apiResponse.data.downloads.forEach(item => {
+                        downloadLinks.push({
+                            quality: item.quality || 'Unknown',
+                            size: item.size || 'Unknown',
+                            download_url: item.url || item.link || ''
+                        });
                     });
-                } else {
-                    // Not in a table, just add as is
+                }
+            } catch (apiError) {
+                console.log('⚠️ API method failed:', apiError.message);
+            }
+        }
+
+        // 6. තවමත් links නැතිනම්, fallback ක්‍රමයක්
+        if (downloadLinks.length === 0) {
+            // Check if there are any links in the page that might be downloads
+            $('a[href*="download"]').each((i, el) => {
+                const href = $(el).attr('href');
+                if (href) {
                     downloadLinks.push({
-                        quality: qualityMatch ? qualityMatch[0] : 'Unknown',
-                        size: sizeMatch ? `${sizeMatch[1]} ${sizeMatch[2]}` : 'Unknown',
-                        download_url: url
+                        quality: 'Unknown',
+                        size: 'Unknown',
+                        download_url: href
                     });
                 }
             });
         }
 
-        // Remove duplicates (same download URL)
+        // 7. Duplicate links ඉවත් කරන්න
         const uniqueLinks = [];
         const seenUrls = new Set();
         downloadLinks.forEach(item => {
-            if (!seenUrls.has(item.download_url)) {
+            if (item.download_url && !seenUrls.has(item.download_url)) {
                 seenUrls.add(item.download_url);
                 uniqueLinks.push(item);
             }
         });
 
-        // ✅ Success response
+        // ✅ Response එක
         res.json({
             status: true,
             owner: '@KingPoddaModz',
             movie: {
                 title: title,
-                url: movieUrl
+                url: movieUrl,
+                id: movieId
             },
             result: uniqueLinks.length > 0 ? uniqueLinks : [
                 {
                     quality: 'N/A',
                     size: 'N/A',
-                    download_url: 'No download links found. The page structure may have changed.'
+                    download_url: '⚠️ Download links are hidden. Please check the page directly.'
                 }
             ]
         });
