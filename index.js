@@ -1,15 +1,15 @@
+const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const fs = require('fs');
 require('dotenv').config();
 
-const BASE_URL = "https://sinhalasub.lk";
-const MOVIES_URL = `${BASE_URL}/movies/`;
+const app = express();
+const PORT = 3000;
 
-// .env ෆයිල් එකෙන් ඔක්කොම කුකීස් ටික හරියටම කියවීම
+// .env එකෙන් කුකීස් කියවීම
 const COOKIES = {
     "_ga_03W6RSCJV1": process.env._GA_03W6RSCJV1,
-    "s9ifs0idfjlwfie32dekl": process.env.S9IFS0IDFJLVFIE32DEKL, // මෙතන තිත හැදිලා තිබ්බේ, දැන් හරි!
+    "s9ifs0idfjlwfie32dekl": process.env.S9IFS0IDFJLVFIE32DEKL,
     "_ga": process.env._GA,
     "_gat": process.env._GAT,
     "_gid": process.env._GID,
@@ -19,7 +19,6 @@ const COOKIES = {
     "starstruck_8c9b99985687fb6ab1d030c04b088ebb": process.env.STARSTRUCK
 };
 
-// Cookies ටික String එකක් බවට පတ် කිරීම
 const cookieString = Object.entries(COOKIES)
     .filter(([_, val]) => val)
     .map(([key, val]) => `${key}=${val}`)
@@ -33,104 +32,118 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
-async function getSoup(url) {
+// එක පිටුවක විස්තර සූරාගන්නා පොදු Function එක
+async function scrapePageDetails(targetUrl) {
     try {
-        const response = await axios.get(url, { headers: HEADERS, timeout: 15000 });
-        return cheerio.load(response.data);
-    } catch (error) {
-        console.error(`Error fetching ${url}: ${error.message}`);
+        const response = await axios.get(targetUrl, { headers: HEADERS, timeout: 10000 });
+        const $ = cheerio.load(response.data);
+
+        const title = $('h1').text().trim() || "N/A";
+        
+        let image = "N/A";
+        const imgTag = $('.poster img') || $('.wp-post-image') || $('meta[property="og:image"]');
+        if (imgTag.length > 0) {
+            image = imgTag.attr('src') || imgTag.attr('data-src') || imgTag.attr('content') || "N/A";
+        }
+
+        const downloadLinks = [];
+        $('a[href]').each((_, element) => {
+            const href = $(element).attr('href');
+            const text = $(element).text().trim().toLowerCase();
+
+            if (
+                ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive', 'පිවිසෙන්න'].some(x => text.includes(x)) ||
+                ['download', 'go.sinhalasub', 'links', 'drive'].some(y => href.toLowerCase().includes(y))
+            ) {
+                if (!['telegram', 'facebook', 'twitter', 'whatsapp'].some(z => href.toLowerCase().includes(z))) {
+                    downloadLinks.push({
+                        label: $(element).text().trim() || "Download Link",
+                        link: href
+                    });
+                }
+            }
+        });
+
+        return {
+            title: title,
+            image: image,
+            url: targetUrl,
+            download_links: downloadLinks
+        };
+    } catch (err) {
+        console.error(`Scraping failed for ${targetUrl}: ${err.message}`);
         return null;
     }
 }
 
-async function extractMovieLinks(pageUrl) {
-    const $ = await getSoup(pageUrl);
-    if (!$) return [];
+app.get('/api/movie', async (req, res) => {
+    const movieUrl = req.query.url;
+    const movieName = req.query.name;
 
-    const links = [];
-    
-    // සයිට් එකේ තියෙන ඔක්කොම ලින්ක්ස් (<a> tags) පරික්ෂා කිරීම (වඩාත්ම ආරක්ෂිත ක්‍රමය)
-    $('a').each((_, element) => {
-        const href = $(element).attr('href');
-        
-        if (href && href.startsWith(BASE_URL) && href.includes('/movies/')) {
-            // අනවශ්‍ය /page/ හෝ /category/ ලින්ක්ස් අයින් කිරීම
-            if (!['/page/', '/category/', '/genre/', '/release/'].some(x => href.includes(x))) {
-                // මුල් පිටුවේ ලින්ක් එකම නැවත එකතු වීම වැළැක්වීම
-                if (href.replace(/\/$/, '') !== MOVIES_URL.replace(/\/$/, '')) {
-                    if (!links.includes(href)) {
-                        links.push(href);
+    // 1. ක්‍රමය: ?name= දුන්නොත් සර්ච් කරලා පළවෙනි එක විතරක් ගන්නවා
+    if (movieName) {
+        try {
+            const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
+            const response = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
+            const $ = cheerio.load(response.data);
+            
+            let firstMovieUrl = null;
+
+            // සර්ච් රිසල්ට්ස් වලින් පළවෙනිම චිත්‍රපට ලින්ක් එක විතරක් හොයාගන්නවා
+            $('article, .result-item article').each((_, element) => {
+                if (!firstMovieUrl) {
+                    const titleTag = $(element).find('.details .title a') || $(element).find('h2 a') || $(element).find('a');
+                    const href = titleTag.attr('href');
+                    if (href && href.includes('/movies/')) {
+                        firstMovieUrl = href;
                     }
                 }
+            });
+
+            if (!firstMovieUrl) {
+                return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found for this name." });
             }
-        }
-    });
-    return links;
-}
 
-async function scrapeMovieDetails(url) {
-    const $ = await getSoup(url);
-    if (!$) return null;
+            // ඒ හොයාගත්ත පළවෙනි Original ලින්ක් එක ඇතුළට ගිහින් ඩේටා ටික ගන්නවා
+            console.log(`Found first link: ${firstMovieUrl}. Fetching details...`);
+            const movieDetails = await scrapePageDetails(firstMovieUrl);
 
-    const data = {
-        url: url,
-        title: "N/A",
-        imdb_rating: "N/A",
-        download_links: []
-    };
-
-    data.title = $('h1').text().trim() || "N/A";
-
-    const imdbText = $('.imdb-rating, .rating, .num, .imdbRating').text().trim();
-    if (imdbText) {
-        data.imdb_rating = imdbText;
-    } else {
-        const bodyText = $('body').text();
-        const match = bodyText.match(/IMDb[:\s]+([\d.]+)/i);
-        if (match) data.imdb_rating = match[1];
-    }
-
-    $('a[href]').each((_, element) => {
-        const href = $(element).attr('href');
-        const text = $(element).text().trim().toLowerCase();
-
-        if (
-            ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive', 'පිවිසෙන්න'].some(x => text.includes(x)) ||
-            ['download', 'go.sinhalasub', 'links', 'drive'].some(y => href.toLowerCase().includes(y))
-        ) {
-            if (!['telegram', 'facebook', 'twitter', 'whatsapp'].some(z => href.toLowerCase().includes(z))) {
-                data.download_links.push({
-                    label: $(element).text().trim() || "Download Link",
-                    link: href
-                });
+            if (!movieDetails) {
+                return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Failed to fetch original movie details." });
             }
+
+            return res.json({
+                status: true,
+                owner: "@KingPoddaModz",
+                result: [movieDetails]
+            });
+
+        } catch (error) {
+            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Search failed: " + error.message });
         }
+    }
+
+    // 2. ක්‍රමය: ?url= දුන්නොත් කෙලින්ම ඒ පිටුවේ විස්තර ගන්නවා
+    if (movieUrl) {
+        const movieDetails = await scrapePageDetails(movieUrl);
+        if (!movieDetails) {
+            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Failed to fetch URL details." });
+        }
+
+        return res.json({
+            status: true,
+            owner: "@KingPoddaModz",
+            result: [movieDetails]
+        });
+    }
+
+    return res.status(400).json({
+        status: false,
+        owner: "@KingPoddaModz",
+        error: "Please provide either 'url' or 'name' parameter."
     });
+});
 
-    return data;
-}
-
-async function main() {
-    console.log("Scraping Sinhalasub movies using Node.js...");
-    const links = await extractMovieLinks(MOVIES_URL);
-    console.log(`Found ${links.length} movie links.`);
-
-    if (links.length === 0) {
-        console.log("⚠️ No links found. Your Cloudflare cookies might be expired! Please update .env file.");
-        return;
-    }
-
-    const allData = [];
-    // මුල් ෆිල්ම්ස් 5 ස්ක්‍රේප් කරමු
-    for (const link of links.slice(0, 5)) { 
-        console.log(`Scraping: ${link}`);
-        const details = await scrapeMovieDetails(link);
-        if (details) allData.push(details);
-        await new Promise(resolve => setTimeout(resolve, 2000)); // සයිට් එකට බරක් නොවෙන්න තත්පර 2ක Delay එකක්
-    }
-
-    fs.writeFileSync('sinhalasub_data.json', JSON.stringify(allData, null, 4), 'utf-8');
-    console.log("Done! Saved to sinhalasub_data.json");
-}
-
-main();
+app.listen(PORT, () => {
+    console.log(`🚀 API Server is running on http://localhost:${PORT}`);
+});
