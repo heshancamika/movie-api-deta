@@ -31,7 +31,7 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
-// 🎯 රීඩිරෙක්ට් ලින්ක් එක ඇතුළට ගිහින් ඇත්තම cdn.sinhalasub.net ලින්ක් එක විතරක් ගන්නා Function එක
+// රීඩිරෙක්ට් ලින්ක් එක ඇතුළට ගිහින් ඇත්තම cdn.sinhalasub.net ලින්ක් එක විතරක් ගන්නා හැටි
 async function getCdnLink(redirectUrl) {
     try {
         if (!redirectUrl.includes('/links/')) return null;
@@ -42,7 +42,6 @@ async function getCdnLink(redirectUrl) {
         let cdnUrl = null;
         $('a').each((_, el) => {
             const href = $(el).attr('href');
-            // 🎯 අපිට ඕනෙ cdn.sinhalasub.net කියන ඩිරෙක්ට් ඩවුන්ලෝඩ් සර්වර් ලින්ක් එක විතරයි!
             if (href && href.includes('cdn.sinhalasub.net')) {
                 cdnUrl = href;
             }
@@ -53,22 +52,20 @@ async function getCdnLink(redirectUrl) {
     }
 }
 
-// 🎯 ලින්ක් එකේ නම ඇතුළෙන් ෆයිල් සයිස් එක (3.54 GB වගේ) කපා ගන්නා ක්‍රමය
+// ෆයිල් සයිස් එක කපා ගන්නා ක්‍රමය
 function extractSize(url) {
-    // සාමාන්‍යයෙන් ලින්ක් එක අග තියෙන ෆයිල් නම කියවා ගන්නවා
     const decodedUrl = decodeURIComponent(url);
     const matches = decodedUrl.match(/(?:_|\s|-)(\d+(?:\.\d+)?\s*(?:GB|MB|gb|mb))/);
     if (matches) {
         return matches[1].toUpperCase();
     }
-    
-    // හොයාගන්න බැරි වුණොත් Default අගයන් දෙනවා (සාමාන්‍ය ෆිල්ම් වල හැටියට)
     if (url.includes('1080p')) return "2.5 GB - 3.5 GB";
     if (url.includes('720p')) return "1.2 GB - 1.8 GB";
     if (url.includes('480p')) return "500 MB - 900 MB";
     return "N/A";
 }
 
+// තනි පිටුවක ඇති DLServer-01 ලින්ක්ස් ටික විතරක් පෙරලා ගැනීම
 async function scrapePageDetails(targetUrl) {
     try {
         const response = await axios.get(targetUrl, { headers: HEADERS, timeout: 10000 });
@@ -79,13 +76,11 @@ async function scrapePageDetails(targetUrl) {
             const href = $(element).attr('href');
             const text = $(element).text().trim();
 
-            // DLServer-01 හෝ ඩිරෙක්ට් සර්වර් ලින්ක්ස් විතරක් මුලින්ම අල්ලනවා
             if (href && href.includes('/links/') && (text.includes('DLServer-01') || text.toLowerCase().includes('server-01'))) {
                 rawLinks.push(href);
             }
         });
 
-        // ලින්ක්ස් ටික නැත්නම්, ඕනෑම /links/ එකක් චෙක් කරලා cdn ලින්ක්ස් තියෙනවද බලනවා
         if (rawLinks.length === 0) {
             $('a[href*="/links/"]').each((_, element) => {
                 const href = $(element).attr('href');
@@ -94,7 +89,7 @@ async function scrapePageDetails(targetUrl) {
         }
 
         const results = [];
-        console.log(`Filtering and resolving ${rawLinks.length} potential direct download links...`);
+        console.log(`Resolving ${rawLinks.length} potential direct download links...`);
 
         for (const link of rawLinks) {
             const cdnLink = await getCdnLink(link);
@@ -107,7 +102,6 @@ async function scrapePageDetails(targetUrl) {
 
                 const size = extractSize(cdnLink);
 
-                // 🎯 ඩියුප්ලිකේට් ලින්ක්ස් වැටෙන එක නතර කරන්න
                 if (!results.some(r => r.download_url === cdnLink)) {
                     results.push({
                         quality: quality,
@@ -118,7 +112,6 @@ async function scrapePageDetails(targetUrl) {
             }
         }
 
-        // Quality එක අනුව පිළිවෙලකට සකස් කිරීම (1080p -> 720p -> 480p)
         results.sort((a, b) => {
             if (a.quality.includes('1080p')) return -1;
             if (b.quality.includes('1080p')) return 1;
@@ -137,46 +130,74 @@ app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
     const movieName = req.query.name;
 
+    // 🎯 1. ක්‍රමය: නමෙන් සෙවීම (Sinhalasub අභ්‍යන්තර Live Search API එක භාවිතයෙන්)
     if (movieName) {
         try {
-            const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
-            const response = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
-            const $ = cheerio.load(response.data);
+            console.log(`Searching for movie via Live Search API: ${movieName}`);
             
-            let firstMovieUrl = null;
-
-            $('.result-item article, article, .movies-list article').each((_, element) => {
-                if (!firstMovieUrl) {
-                    const href = $(element).find('a').attr('href');
-                    if (href && href.includes('/movies/')) {
-                        firstMovieUrl = href;
-                    }
-                }
+            // සයිට් එකේ ඇතුළෙන්ම සර්ච් ඩේටා ගන්නා නිල API එකට රික්වෙස්ට් එකක් යවනවා
+            const searchApiUrl = `https://sinhalasub.lk/wp-json/dooplay/search/?keyword=${encodeURIComponent(movieName)}`;
+            
+            const apiResponse = await axios.get(searchApiUrl, { 
+                headers: {
+                    ...HEADERS,
+                    "Accept": "application/json, text/javascript, */*; q=0.01"
+                }, 
+                timeout: 10000 
             });
 
-            if (!firstMovieUrl) {
-                return res.status(404).json({ status: false, owner: "@Heshanmd", error: "No movies found." });
+            let firstMovieUrl = null;
+
+            // සයිට් එකේ API එකෙන් ලැබෙන JSON data වලින් පළමු චිත්‍රපටයේ URL එක ගන්නවා
+            if (apiResponse.data && typeof apiResponse.data === 'object') {
+                const keys = Object.keys(apiResponse.data);
+                if (keys.length > 0 && apiResponse.data[keys[0]]) {
+                    firstMovieUrl = apiResponse.data[keys[0]].url;
+                }
             }
 
+            // Fallback: යම් හෙයකින් API එක වැඩ නොකලොත් පරණ HTML සර්ච් ක්‍රමය ක්‍රියාත්මක වෙනවා
+            if (!firstMovieUrl) {
+                console.log("Live API failed, trying HTML search fallback...");
+                const searchHtmlUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
+                const htmlRes = await axios.get(searchHtmlUrl, { headers: HEADERS, timeout: 10000 });
+                const $ = cheerio.load(htmlRes.data);
+                
+                $('.result-item article, article, .movies-list article').each((_, element) => {
+                    if (!firstMovieUrl) {
+                        const href = $(element).find('a').attr('href');
+                        if (href && href.includes('/movies/')) {
+                            firstMovieUrl = href;
+                        }
+                    }
+                });
+            }
+
+            if (!firstMovieUrl) {
+                return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found." });
+            }
+
+            console.log(`Found Movie URL: ${firstMovieUrl}. Resolving CDN links...`);
             const movieResult = await scrapePageDetails(firstMovieUrl);
-            return res.json({ status: true, owner: "@Heshanmd", result: movieResult });
+            return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
 
         } catch (error) {
-            return res.status(500).json({ status: false, owner: "@Heshanmd", error: error.message });
+            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Search error: " + error.message });
         }
     }
 
+    // 2. ක්‍රමය: URL එකෙන් කෙලින්ම සෙවීම
     if (movieUrl) {
         const movieResult = await scrapePageDetails(movieUrl);
-        return res.json({ status: true, owner: "@Heshanmd", result: movieResult });
+        return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
     }
 
-    return res.status(400).json({ status: false, owner: "@Heshanmd", error: "Missing parameters." });
+    return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters." });
 });
 
 app.set('json spaces', 2); 
 
 app.listen(PORT, () => {
-    console.log(`🚀 Perfect Direct Auto-Download API running on port ${PORT}`);
+    console.log(`🚀 Perfect Live-Search Auto-Download API running on port ${PORT}`);
 });
 
