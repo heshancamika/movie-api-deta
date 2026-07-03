@@ -1,239 +1,115 @@
-const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const compression = require('compression');
+const fs = require('fs');
 require('dotenv').config();
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const BASE_URL = "https://sinhalasub.lk";
+const MOVIES_URL = `${BASE_URL}/movies/`;
 
-// Middleware
-app.use(helmet());
-app.use(compression());
-app.use(cors());
-app.use(morgan('combined'));
-app.use(express.json());
+// .env ෆයිල් එකෙන් කුකීස් කියවීම
+const COOKIES = {
+    "cf_clearance": process.env.CF_CLEARANCE,
+    "starstruck_8c9b99985687fb6ab1d030c04b088ebb": process.env.STARSTRUCK,
+    "s9ifs0idfjlwfie32dekl": "0",
+    "hu8935j4i9fq3hpuj9q39": "true"
+};
 
-// Root endpoint
-app.get('/', (req, res) => {
-    res.json({
-        status: true,
-        message: '🎬 SinhalaSub Movie API is running!',
-        version: '1.0.0',
-        endpoints: {
-            movie: 'GET /api/movie?url=https://sinhalasub.lk/movies/...'
-        }
-    });
-});
+// Cookies ටික String එකක් බවට පත් කිරීම
+const cookieString = Object.entries(COOKIES)
+    .filter(([_, val]) => val)
+    .map(([key, val]) => `${key}=${val}`)
+    .join('; ');
 
-// Movie API endpoint
-app.get('/api/movie', async (req, res) => {
-    const movieUrl = req.query.url;
+const HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Cookie": cookieString
+};
 
-    if (!movieUrl) {
-        return res.status(400).json({
-            status: false,
-            error: 'Missing "url" parameter. Example: /api/movie?url=https://sinhalasub.lk/movies/spider-man-no-way-home-2021-sinhala-subtitles/'
-        });
-    }
-
-    if (!movieUrl.includes('sinhalasub.lk/movies/')) {
-        return res.status(400).json({
-            status: false,
-            error: 'Invalid URL. Must be a sinhalasub.lk movie page.'
-        });
-    }
-
-    console.log(`📥 [${new Date().toISOString()}] Fetching: ${movieUrl}`);
-
+async function getSoup(url) {
     try {
-        const response = await axios.get(movieUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://sinhalasub.lk/'
-            },
-            timeout: 15000
-        });
-
-        const $ = cheerio.load(response.data);
-        const downloadLinks = [];
-
-        // 🎯 Movie Title
-        const title = $('h1.entry-title').text().trim() || 
-                      $('h1').first().text().trim() || 
-                      'Unknown Title';
-
-        console.log(`📌 Title: ${title}`);
-
-        // 🔥 ක්‍රමය 1: "Links" section එක හොයාගෙන ඊට පස්සේ tables parse කරන්න
-        // "Links" කියන heading එක හොයාගන්න
-        let linksSection = null;
-        $('h2, h3, h4, strong, b').each((i, el) => {
-            const text = $(el).text().trim();
-            if (text.toLowerCase().includes('links') || text.includes('Options')) {
-                linksSection = $(el).parent();
-                return false;
-            }
-        });
-
-        if (linksSection) {
-            console.log('🔍 Found Links section');
-            // Links section එකේ තියෙන tables හොයන්න
-            linksSection.find('table').each((i, table) => {
-                const rows = $(table).find('tr');
-                rows.each((j, row) => {
-                    const cols = $(row).find('td');
-                    if (cols.length >= 2) {
-                        const quality = $(cols[0]).text().trim();
-                        const size = $(cols[1]).text().trim();
-                        
-                        // Quality එකේ FHD/HD/SD තියෙනවද check කරන්න
-                        if (quality.match(/(FHD|HD|SD|1080p|720p|480p)/i)) {
-                            // අපිට ඕනෙ මෙම row එකට අදාළ download link එක
-                            // sinhalasub.lk එකේ download links තියෙන්නේ JavaScript onclick events වල
-                            // ඒ නිසා අපිට ඒවා direct එකට ගන්න බැහැ
-                            // නමුත් අපිට ඒවායේ quality සහ size විතරක් ගන්න පුළුවන්
-                            downloadLinks.push({
-                                quality: quality,
-                                size: size,
-                                download_url: '⚠️ Download link is hidden. Please visit the page directly.'
-                            });
-                        }
-                    }
-                });
-            });
-        }
-
-        // 🔥 ක්‍රමය 2: cdn.sinhalasub.net links හොයන්න (direct links)
-        if (downloadLinks.length === 0) {
-            console.log('🔍 Searching for cdn.sinhalasub.net links...');
-            $('a[href*="cdn.sinhalasub.net"]').each((i, el) => {
-                const href = $(el).attr('href');
-                let quality = 'Unknown';
-                let size = 'Unknown';
-                
-                // Parent elements වලින් quality/size හොයන්න
-                let parent = $(el).parent();
-                for (let j = 0; j < 5; j++) {
-                    if (parent.length === 0) break;
-                    const parentText = parent.text().trim();
-                    
-                    const qualityMatch = parentText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p|FHD|HD|SD)/i);
-                    if (qualityMatch) {
-                        quality = qualityMatch[0].trim();
-                    }
-                    
-                    const sizeMatch = parentText.match(/([\d.]+)\s*(GB|MB)/i);
-                    if (sizeMatch) {
-                        size = `${sizeMatch[1]} ${sizeMatch[2]}`;
-                    }
-                    
-                    if (quality !== 'Unknown' && size !== 'Unknown') break;
-                    parent = parent.parent();
-                }
-                
-                downloadLinks.push({
-                    quality: quality,
-                    size: size,
-                    download_url: href
-                });
-            });
-        }
-
-        // 🔥 ක්‍රමය 3: onclick events වලින් links හොයන්න
-        if (downloadLinks.length === 0) {
-            console.log('🔍 Searching for onclick events...');
-            $('a[onclick]').each((i, el) => {
-                const onclick = $(el).attr('onclick');
-                if (onclick && onclick.includes('download')) {
-                    // Extract URL from onclick
-                    const urlMatch = onclick.match(/https?:\/\/[^\s\'"]+/);
-                    if (urlMatch) {
-                        downloadLinks.push({
-                            quality: 'Unknown',
-                            size: 'Unknown',
-                            download_url: urlMatch[0]
-                        });
-                    }
-                }
-            });
-        }
-
-        // 🔥 ක්‍රමය 4: window.location හෝ window.open links හොයන්න (script එකේ)
-        if (downloadLinks.length === 0) {
-            console.log('🔍 Searching in scripts...');
-            $('script').each((i, el) => {
-                const scriptContent = $(el).html();
-                if (scriptContent) {
-                    // Look for download URLs in script
-                    const urlMatches = scriptContent.match(/https?:\/\/cdn\.sinhalasub\.net\/[^\s\'"]+/g);
-                    if (urlMatches) {
-                        urlMatches.forEach(url => {
-                            downloadLinks.push({
-                                quality: 'Unknown',
-                                size: 'Unknown',
-                                download_url: url
-                            });
-                        });
-                    }
-                }
-            });
-        }
-
-        // Remove duplicates
-        const uniqueLinks = [];
-        const seenUrls = new Set();
-        downloadLinks.forEach(item => {
-            if (item.download_url && !seenUrls.has(item.download_url)) {
-                seenUrls.add(item.download_url);
-                uniqueLinks.push(item);
-            }
-        });
-
-        console.log(`✅ Found ${uniqueLinks.length} download links`);
-
-        // ✅ Response
-        res.json({
-            status: true,
-            owner: '@KingPoddaModz',
-            movie: {
-                title: title,
-                url: movieUrl
-            },
-            result: uniqueLinks.length > 0 ? uniqueLinks : [
-                {
-                    quality: 'N/A',
-                    size: 'N/A',
-                    download_url: '⚠️ No download links found. The download links are hidden behind JavaScript.'
-                }
-            ]
-        });
-
+        const response = await axios.get(url, { headers: HEADERS, timeout: 15000 });
+        return cheerio.load(response.data);
     } catch (error) {
-        console.error(`❌ [${new Date().toISOString()}] Error:`, error.message);
-        res.status(500).json({
-            status: false,
-            error: 'Failed to fetch movie data',
-            details: error.message
-        });
+        console.error(`Error fetching ${url}: ${error.message}`);
+        return null;
     }
-});
+}
 
-// 404 Handler
-app.use((req, res) => {
-    res.status(404).json({
-        status: false,
-        error: 'Endpoint not found'
+async function extractMovieLinks(pageUrl) {
+    const $ = await getSoup(pageUrl);
+    if (!$) return [];
+
+    const links = [];
+    $('article a, .result-item article .details .title a, .animation-2 a').each((_, element) => {
+        const href = $(element).attr('href');
+        if (href && href.includes('/movies/') && !['/page/', '/category/', '/genre/'].some(x => href.includes(x))) {
+            if (!links.includes(href)) {
+                links.push(href);
+            }
+        }
     });
-});
+    return links;
+}
 
-// Server start
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Movie API running on http://0.0.0.0:${PORT}`);
-    console.log(`📌 Example: http://localhost:${PORT}/api/movie?url=https://sinhalasub.lk/movies/spider-man-no-way-home-2021-sinhala-subtitles/`);
-});
+async function scrapeMovieDetails(url) {
+    const $ = await getSoup(url);
+    if (!$) return null;
+
+    const data = {
+        url: url,
+        title: "N/A",
+        imdb_rating: "N/A",
+        download_links: []
+    };
+
+    data.title = $('h1').text().trim() || "N/A";
+
+    const imdbText = $('.imdb-rating, .rating, .num').text().trim();
+    if (imdbText) {
+        data.imdb_rating = imdbText;
+    } else {
+        const bodyText = $('body').text();
+        const match = bodyText.match(/IMDb[:\s]+([\d.]+)/);
+        if (match) data.imdb_rating = match[1];
+    }
+
+    $('a[href]').each((_, element) => {
+        const href = $(element).attr('href');
+        const text = $(element).text().trim().toLowerCase();
+
+        if (
+            ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive'].some(x => text.includes(x)) ||
+            ['download', 'go.sinhalasub', 'links'].some(y => href.toLowerCase().includes(y))
+        ) {
+            if (!['telegram', 'facebook', 'twitter', 'whatsapp'].some(z => href.toLowerCase().includes(z))) {
+                data.download_links.push({
+                    label: $(element).text().trim() || "Download Link",
+                    link: href
+                });
+            }
+        }
+    });
+
+    return data;
+}
+
+async function main() {
+    console.log("Scraping Sinhalasub movies using Node.js...");
+    const links = await extractMovieLinks(MOVIES_URL);
+    console.log(`Found ${links.length} movie links.`);
+
+    const allData = [];
+    for (const link of links.slice(0, 5)) { // මුල් ෆිල්ම්ස් 5 විතරක් ටෙස්ට් කරමු
+        console.log(`Scraping: ${link}`);
+        const details = await scrapeMovieDetails(link);
+        if (details) allData.push(details);
+        await new Promise(resolve => setTimeout(resolve, 1500)); // Delay එක
+    }
+
+    fs.writeFileSync('sinhalasub_data.json', JSON.stringify(allData, null, 4), 'utf-8');
+    console.log("Done! Saved to sinhalasub_data.json");
+}
+
+main();
+
