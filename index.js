@@ -31,7 +31,6 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
-// රීඩිරෙක්ට් ලින්ක් එක ඇතුළට ගිහින් ඇත්තම cdn.sinhalasub.net ලින්ක් එක විතරක් ගන්නා හැටි
 async function getCdnLink(redirectUrl) {
     try {
         if (!redirectUrl.includes('/links/')) return null;
@@ -52,7 +51,6 @@ async function getCdnLink(redirectUrl) {
     }
 }
 
-// ෆයිල් සයිස් එක කපා ගන්නා ක්‍රමය
 function extractSize(url) {
     const decodedUrl = decodeURIComponent(url);
     const matches = decodedUrl.match(/(?:_|\s|-)(\d+(?:\.\d+)?\s*(?:GB|MB|gb|mb))/);
@@ -65,7 +63,6 @@ function extractSize(url) {
     return "N/A";
 }
 
-// තනි පිටුවක ඇති DLServer-01 ලින්ක්ස් ටික විතරක් පෙරලා ගැනීම
 async function scrapePageDetails(targetUrl) {
     try {
         const response = await axios.get(targetUrl, { headers: HEADERS, timeout: 10000 });
@@ -126,62 +123,10 @@ async function scrapePageDetails(targetUrl) {
     }
 }
 
-// 🎯 ප්‍රධාන Endpoint එක (Optimized Server-Side Stream Reader)
+// 🎯 ප්‍රධාන Endpoint එක (JSON Only - No Buffer, Fast Response)
 app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
     const movieName = req.query.text || req.query.name; 
-
-    // 🎯 සැබෑ වීඩියෝ CDN ලින්ක් එක උපරිම වේගයෙන් බේලීස් එකට ගලන් යන්න සලස්වන ශ්‍රිතය
-    const streamWithOptimizedSpeed = async (movieResult) => {
-        if (!movieResult || movieResult.length === 0) {
-            return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No direct download links found." });
-        }
-
-        // බොට් එකට පහසුම 480p (SD) ලින්ක් එක තෝරා ගැනීම
-        let selectedMovie = movieResult.find(m => m.quality.includes('480p') || m.quality.toLowerCase().includes('sd'));
-        if (!selectedMovie) {
-            selectedMovie = movieResult[movieResult.length - 1]; 
-        }
-
-        console.log(`⚡ Streaming with Optimized Speed from: ${selectedMovie.download_url}`);
-
-        try {
-            // Axios ස්ට්‍රීම් එක උපරිම නෙට්වර්ක් ත්‍රෑෆික් එකට ඔප්ටිමයිස් කිරීම
-            const streamResponse = await axios({
-                method: 'get',
-                url: selectedMovie.download_url,
-                responseType: 'stream',
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                    'Accept': '*/*'
-                },
-                timeout: 0, // Timeout වීම් මුළුමනින්ම නැවැත්වීම
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity
-            });
-
-            // 🎯 Chunks යන වේගය (64KB සිට 2MB දක්වා) වැඩි කර වේගය උපරිම කිරීම
-            streamResponse.data._readableState.highWaterMark = 1024 * 1024 * 2; 
-
-            // බේලීස් එකට ලස්සනට ඩේටා ටික කියවන්න Headers සෙට් කිරීම
-            res.setHeader('Content-Type', 'video/mp4');
-            res.setHeader('Accept-Ranges', 'bytes');
-            res.setHeader('Cache-Control', 'public, max-age=31536000');
-
-            // ස්ට්‍රීම් එක කෙලින්ම API Response එක හරහා බොට් එකේ බේලීස් එකට Pipe කිරීම
-            streamResponse.data.pipe(res);
-
-            // ක්ලයන්ට් (බොට්) එක පැත්තෙන් රික්වෙස්ට් එක කැන්සල් කළොත් ස්ට්‍රීම් එක වසා දැමීම
-            req.on('close', () => {
-                streamResponse.data.destroy();
-            });
-
-        } catch (downloadErr) {
-            console.error('Optimized Speed Download Failed:', downloadErr.message);
-            // ස්ට්‍රීම් එක අවුල් වුණොත් සේෆ්ටි එකට 302 රීඩිරෙක්ට් එකක් දෙනවා
-            return res.redirect(302, selectedMovie.download_url);
-        }
-    };
 
     if (movieName) {
         try {
@@ -222,8 +167,8 @@ app.get('/api/movie', async (req, res) => {
             console.log(`Found URL: ${firstMovieUrl}. Extracting direct links...`);
             const movieResult = await scrapePageDetails(firstMovieUrl);
             
-            // 🎯 ඔප්ටිමයිස් කරපු ස්පීඩ් එකෙන් රන් කරවීම
-            return await streamWithOptimizedSpeed(movieResult);
+            // 🎯 කෙලින්ම බොට් එකට JSON එක විතරක් දෙනවා (සර්වර් එක මැදින් වීඩියෝ යන්නෙ නැහැ)
+            return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
 
         } catch (error) {
             return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: error.message });
@@ -232,7 +177,7 @@ app.get('/api/movie', async (req, res) => {
 
     if (movieUrl) {
         const movieResult = await scrapePageDetails(movieUrl);
-        return await streamWithOptimizedSpeed(movieResult);
+        return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
     }
 
     return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters. Use ?text= or ?url=" });
@@ -241,5 +186,6 @@ app.get('/api/movie', async (req, res) => {
 app.set('json spaces', 2); 
 
 app.listen(PORT, () => {
-    console.log(`🚀 Ultimate Speed-Optimized Movie API Server running on port ${PORT}`);
+    console.log(`🚀 Original JSON Movie API Server running on port ${PORT}`);
 });
+
