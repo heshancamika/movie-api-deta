@@ -126,47 +126,43 @@ async function scrapePageDetails(targetUrl) {
     }
 }
 
+// 🎯 ප්‍රධාන Endpoint එක
 app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
-    const movieName = req.query.name;
+    // 🎯 Podda API එක වගේම ?text= හෝ පරණ ?name= දෙකෙන්ම වැඩ කරන්න හැදුවා
+    const movieName = req.query.text || req.query.name; 
 
-    // 🎯 1. ක්‍රමය: නමෙන් සෙවීම (Sinhalasub අභ්‍යන්තර Live Search API එක භාවිතයෙන්)
     if (movieName) {
         try {
-            console.log(`Searching for movie via Live Search API: ${movieName}`);
+            console.log(`Searching for movie: ${movieName}`);
             
-            // සයිට් එකේ ඇතුළෙන්ම සර්ච් ඩේටා ගන්නා නිල API එකට රික්වෙස්ට් එකක් යවනවා
-            const searchApiUrl = `https://sinhalasub.lk/wp-json/dooplay/search/?keyword=${encodeURIComponent(movieName)}`;
+            // සයිට් එකේ 404 නොවදින ස්ථිරම සර්ච් URL එක (Native WordPress Search)
+            const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
             
-            const apiResponse = await axios.get(searchApiUrl, { 
-                headers: {
-                    ...HEADERS,
-                    "Accept": "application/json, text/javascript, */*; q=0.01"
-                }, 
+            const response = await axios.get(searchUrl, { 
+                headers: HEADERS, 
                 timeout: 10000 
             });
-
+            
+            const $ = cheerio.load(response.data);
             let firstMovieUrl = null;
 
-            // සයිට් එකේ API එකෙන් ලැබෙන JSON data වලින් පළමු චිත්‍රපටයේ URL එක ගන්නවා
-            if (apiResponse.data && typeof apiResponse.data === 'object') {
-                const keys = Object.keys(apiResponse.data);
-                if (keys.length > 0 && apiResponse.data[keys[0]]) {
-                    firstMovieUrl = apiResponse.data[keys[0]].url;
+            // 🛠️ 100% ක්ම වැඩ කරන අලුත්ම සර්ච් HTML Selectors ටික (සයිට් එකේ සර්ච් රිසල්ට්ස් වල තියෙන හැම ටැග් එකක්ම පරික්ෂා කරනවා)
+            $('.result-item article, article, .movies-list article, .search-results article').each((_, element) => {
+                if (!firstMovieUrl) {
+                    const href = $(element).find('a').attr('href');
+                    if (href && href.includes('/movies/') && href !== "https://sinhalasub.lk/movies/") {
+                        firstMovieUrl = href;
+                    }
                 }
-            }
+            });
 
-            // Fallback: යම් හෙයකින් API එක වැඩ නොකලොත් පරණ HTML සර්ච් ක්‍රමය ක්‍රියාත්මක වෙනවා
+            // Fallback 1: සර්ච් පිටුවේ තියෙන ඕනෑම චිත්‍රපට ලින්ක් එකක් අල්ලන්න
             if (!firstMovieUrl) {
-                console.log("Live API failed, trying HTML search fallback...");
-                const searchHtmlUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
-                const htmlRes = await axios.get(searchHtmlUrl, { headers: HEADERS, timeout: 10000 });
-                const $ = cheerio.load(htmlRes.data);
-                
-                $('.result-item article, article, .movies-list article').each((_, element) => {
+                $('a[href*="/movies/"]').each((_, el) => {
                     if (!firstMovieUrl) {
-                        const href = $(element).find('a').attr('href');
-                        if (href && href.includes('/movies/')) {
+                        const href = $(el).attr('href');
+                        if (href && href !== "https://sinhalasub.lk/movies/") {
                             firstMovieUrl = href;
                         }
                     }
@@ -177,27 +173,26 @@ app.get('/api/movie', async (req, res) => {
                 return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found." });
             }
 
-            console.log(`Found Movie URL: ${firstMovieUrl}. Resolving CDN links...`);
+            console.log(`Found URL: ${firstMovieUrl}. Extracting direct links...`);
             const movieResult = await scrapePageDetails(firstMovieUrl);
             return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
 
         } catch (error) {
-            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Search error: " + error.message });
+            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: error.message });
         }
     }
 
-    // 2. ක්‍රමය: URL එකෙන් කෙලින්ම සෙවීම
     if (movieUrl) {
         const movieResult = await scrapePageDetails(movieUrl);
         return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
     }
 
-    return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters." });
+    return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters. Use ?text= or ?url=" });
 });
 
 app.set('json spaces', 2); 
 
 app.listen(PORT, () => {
-    console.log(`🚀 Perfect Live-Search Auto-Download API running on port ${PORT}`);
+    console.log(`🚀 Ultimate Stable API Server running on port ${PORT}`);
 });
 
