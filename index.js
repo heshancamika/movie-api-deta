@@ -6,12 +6,17 @@ require('dotenv').config();
 const BASE_URL = "https://sinhalasub.lk";
 const MOVIES_URL = `${BASE_URL}/movies/`;
 
-// .env ෆයිල් එකෙන් කුකීස් කියවීම
+// .env ෆයිල් එකෙන් ඔක්කොම කුකීස් ටික කියවීම
 const COOKIES = {
-    "cf_clearance": process.env.CF_CLEARANCE,
-    "starstruck_8c9b99985687fb6ab1d030c04b088ebb": process.env.STARSTRUCK,
-    "s9ifs0idfjlwfie32dekl": "0",
-    "hu8935j4i9fq3hpuj9q39": "true"
+    "_ga_03W6RSCJV1": process.env._GA_03W6RSCJV1,
+    "s9ifs0idfjlwfie32dekl": process.envS9IFS0IDFJLVFIE32DEKL,
+    "_ga": process.env._GA,
+    "_gat": process.env._GAT,
+    "_gid": process.env._GID,
+    "dom3ic8zudi28v8lr6fgphwffqoz0j6c": process.env.DOM3IC8ZUDI28V8LR6FGPHWFFQOZ0J6C,
+    "hu8935j4i9fq3hpuj9q39": process.env.HU8935J4I9FQ3HPUJ9Q39,
+    "pp_idelay_1a10afe5fd8dc8069939f8a49fccbc26": process.env.PP_IDELAY_1A10AFE5FD8DC8069939F8A49FCCBC26,
+    "starstruck_8c9b99985687fb6ab1d030c04b088ebb": process.env.STARSTRUCK
 };
 
 // Cookies ටික String එකක් බවට පත් කිරීම
