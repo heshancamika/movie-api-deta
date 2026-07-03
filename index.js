@@ -6,7 +6,6 @@ require('dotenv').config();
 const app = express();
 const PORT = 3005; 
 
-// .env එකෙන් කුකීස් කියවීම
 const COOKIES = {
     "_ga_03W6RSCJV1": process.env._GA_03W6RSCJV1,
     "s9ifs0idfjlwfie32dekl": process.env.S9IFS0IDFJLVFIE32DEKL,
@@ -32,132 +31,105 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
-// 🎯 සයිට් එකේ /links/ පිටුව ඇතුළට ගිහින් ඇත්තම ලින්ක් එක අරන්, ඒක "Direct Download" ලින්ක් එකක් කරන කොටස
-async function getDirectDownloadUrl(redirectUrl) {
+// 🎯 රීඩිරෙක්ට් ලින්ක් එක ඇතුළට ගිහින් ඇත්තම cdn.sinhalasub.net ලින්ක් එක විතරක් ගන්නා Function එක
+async function getCdnLink(redirectUrl) {
     try {
-        if (!redirectUrl.includes('/links/')) return redirectUrl;
+        if (!redirectUrl.includes('/links/')) return null;
 
         const res = await axios.get(redirectUrl, { headers: HEADERS, timeout: 6000 });
         const $ = cheerio.load(res.data);
         
-        let finalUrl = null;
-        
+        let cdnUrl = null;
         $('a').each((_, el) => {
             const href = $(el).attr('href');
-            if (href && !href.includes('sinhalasub.lk') && (href.includes('pixeldrain') || href.includes('file') || href.includes('drive') || href.includes('http'))) {
-                finalUrl = href;
+            // 🎯 අපිට ඕනෙ cdn.sinhalasub.net කියන ඩිරෙක්ට් ඩවුන්ලෝඩ් සර්වර් ලින්ක් එක විතරයි!
+            if (href && href.includes('cdn.sinhalasub.net')) {
+                cdnUrl = href;
             }
         });
-
-        if (finalUrl) {
-            // Pixeldrain පිටුවට නොගොස් කෙලින්ම ඩවුන්ලෝඩ් වීමට සකස් කිරීම
-            if (finalUrl.includes('pixeldrain.com/u/')) {
-                finalUrl = finalUrl.replace('pixeldrain.com/u/', 'pixeldrain.com/api/file/') + '?download';
-            }
-            return finalUrl;
-        }
-
-        return redirectUrl;
+        return cdnUrl;
     } catch (e) {
-        return redirectUrl;
+        return null;
     }
 }
 
-// ලේබල් එක හෝ ලින්ක් එක අනුව Quality එක (480p, 720p, 1080p) වෙන් කරගන්නා හැටි
-function detectQuality(text, link) {
-    const fullText = (text + " " + link).toLowerCase();
-    if (fullText.includes('1080p') || fullText.includes('1080')) return '1080p';
-    if (fullText.includes('720p') || fullText.includes('720')) return '720p';
-    if (fullText.includes('480p') || fullText.includes('480')) return '480p';
-    return 'HD / Other';
+// 🎯 ලින්ක් එකේ නම ඇතුළෙන් ෆයිල් සයිස් එක (3.54 GB වගේ) කපා ගන්නා ක්‍රමය
+function extractSize(url) {
+    // සාමාන්‍යයෙන් ලින්ක් එක අග තියෙන ෆයිල් නම කියවා ගන්නවා
+    const decodedUrl = decodeURIComponent(url);
+    const matches = decodedUrl.match(/(?:_|\s|-)(\d+(?:\.\d+)?\s*(?:GB|MB|gb|mb))/);
+    if (matches) {
+        return matches[1].toUpperCase();
+    }
+    
+    // හොයාගන්න බැරි වුණොත් Default අගයන් දෙනවා (සාමාන්‍ය ෆිල්ම් වල හැටියට)
+    if (url.includes('1080p')) return "2.5 GB - 3.5 GB";
+    if (url.includes('720p')) return "1.2 GB - 1.8 GB";
+    if (url.includes('480p')) return "500 MB - 900 MB";
+    return "N/A";
 }
 
-// තනි චිත්‍රපට පිටුවක විස්තර ලස්සනට ව්‍යුහගත (Structure) කරන කොටස
 async function scrapePageDetails(targetUrl) {
     try {
         const response = await axios.get(targetUrl, { headers: HEADERS, timeout: 10000 });
         const $ = cheerio.load(response.data);
 
-        // Title එක ගැනීම
-        let title = "N/A";
-        let rawTitle = $('title').text().trim();
-        if (rawTitle) {
-            title = rawTitle.split(' - ')[0].trim();
-        }
-
-        // Image එක ගැනීම
-        let image = "N/A";
-        if ($('meta[property="og:image"]').length > 0) {
-            image = $('meta[property="og:image"]').attr('content').trim();
-        } else if ($('.poster img').length > 0) {
-            image = $('.poster img').attr('src') || $('.poster img').attr('data-src');
-        }
-
-        const downloadLinksRaw = [];
+        const rawLinks = [];
         $('a[href]').each((_, element) => {
             const href = $(element).attr('href');
             const text = $(element).text().trim();
-            const textLower = text.toLowerCase();
 
-            if (href && href !== "#" && !href.startsWith('#') && !href.includes('/account/')) {
-                if (
-                    ['download', 'ඩවුන්ලෝඩ්', 'direct', 'gdrive', 'links', 'payout', 'pixeldrain', 'server'].some(x => textLower.includes(x)) ||
-                    ['download', 'go.sinhalasub', 'links', 'drive'].some(y => href.toLowerCase().includes(y))
-                ) {
-                    if (!['facebook', 'twitter', 'whatsapp'].some(z => href.toLowerCase().includes(z))) {
-                        downloadLinksRaw.push({
-                            label: text || "Download Link",
-                            link: href
-                        });
-                    }
-                }
+            // DLServer-01 හෝ ඩිරෙක්ට් සර්වර් ලින්ක්ස් විතරක් මුලින්ම අල්ලනවා
+            if (href && href.includes('/links/') && (text.includes('DLServer-01') || text.toLowerCase().includes('server-01'))) {
+                rawLinks.push(href);
             }
         });
 
-        const direct_downloads = [];
-        const telegram_links = [];
-        let subtitle_link = "N/A";
-
-        console.log(`Structuring ${downloadLinksRaw.length} links into categories...`);
-        
-        for (const item of downloadLinksRaw) {
-            // ටෙලිග්‍රෑම් ලින්ක්ස් වෙන් කිරීම
-            if (item.link.includes('t.me') || item.label.toLowerCase().includes('telegram') || item.label.toLowerCase().includes('telagram')) {
-                telegram_links.push({
-                    server: item.label,
-                    link: item.link
-                });
-                continue;
-            }
-
-            // සබ්ටයිටල් ලින්ක් එක වෙන් කිරීම
-            if (item.label.toLowerCase().includes('subtitle') || item.link.includes('.zip')) {
-                subtitle_link = item.link;
-                continue;
-            }
-
-            // සාමාන්‍ย ඩවුන්ලෝඩ් ලින්ක්ස් ටික ඩිරෙක්ට් කර Quality එක සෙවීම
-            const directLink = await getDirectDownloadUrl(item.link);
-            const quality = detectQuality(item.label, directLink);
-
-            direct_downloads.push({
-                server: item.label,
-                quality: quality,
-                link: directLink
+        // ලින්ක්ස් ටික නැත්නම්, ඕනෑම /links/ එකක් චෙක් කරලා cdn ලින්ක්ස් තියෙනවද බලනවා
+        if (rawLinks.length === 0) {
+            $('a[href*="/links/"]').each((_, element) => {
+                const href = $(element).attr('href');
+                if (href) rawLinks.push(href);
             });
         }
 
-        return {
-            title: title,
-            image: image,
-            url: targetUrl,
-            direct_downloads: direct_downloads,
-            telegram_links: telegram_links,
-            subtitle: subtitle_link
-        };
+        const results = [];
+        console.log(`Filtering and resolving ${rawLinks.length} potential direct download links...`);
+
+        for (const link of rawLinks) {
+            const cdnLink = await getCdnLink(link);
+            
+            if (cdnLink) {
+                let quality = "HD / Other";
+                if (cdnLink.toLowerCase().includes('1080p')) quality = "FHD 1080p";
+                else if (cdnLink.toLowerCase().includes('720p')) quality = "HD 720p";
+                else if (cdnLink.toLowerCase().includes('480p')) quality = "SD 480p";
+
+                const size = extractSize(cdnLink);
+
+                // 🎯 ඩියුප්ලිකේට් ලින්ක්ස් වැටෙන එක නතර කරන්න
+                if (!results.some(r => r.download_url === cdnLink)) {
+                    results.push({
+                        quality: quality,
+                        size: size,
+                        download_url: cdnLink
+                    });
+                }
+            }
+        }
+
+        // Quality එක අනුව පිළිවෙලකට සකස් කිරීම (1080p -> 720p -> 480p)
+        results.sort((a, b) => {
+            if (a.quality.includes('1080p')) return -1;
+            if (b.quality.includes('1080p')) return 1;
+            if (a.quality.includes('720p')) return -1;
+            return 0;
+        });
+
+        return results;
     } catch (err) {
         console.error(`Scraping failed: ${err.message}`);
-        return null;
+        return [];
     }
 }
 
@@ -165,18 +137,14 @@ app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
     const movieName = req.query.name;
 
-    // 1. ක්‍රමය: ?name= මඟින් සෙවීම
     if (movieName) {
         try {
             const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
-            console.log(`Searching for movie: ${movieName}`);
-            
             const response = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
             const $ = cheerio.load(response.data);
             
             let firstMovieUrl = null;
 
-            // සර්ච් පිටුවේ ඇති පළමු චිත්‍රපටයේ ලින්ක් එක සොයා ගැනීම
             $('.result-item article, article, .movies-list article').each((_, element) => {
                 if (!firstMovieUrl) {
                     const href = $(element).find('a').attr('href');
@@ -186,47 +154,29 @@ app.get('/api/movie', async (req, res) => {
                 }
             });
 
-            // Fallback (සර්ච් ලිස්ට් එකේ නැතිනම් ඕනෑම තැනක ඇති පළමු /movies/ ලින්ක් එක ගැනීම)
-            if (!firstMovieUrl) {
-                $('a[href*="/movies/"]').each((_, el) => {
-                    if (!firstMovieUrl) {
-                        const href = $(el).attr('href');
-                        if (href && href !== "https://sinhalasub.lk/movies/") {
-                            firstMovieUrl = href;
-                        }
-                    }
-                });
-            }
-
             if (!firstMovieUrl) {
                 return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found." });
             }
 
-            console.log(`Found URL: ${firstMovieUrl}. Extracting data...`);
-            const movieDetails = await scrapePageDetails(firstMovieUrl);
-            return res.json({ status: true, owner: "@KingPoddaModz", result: movieDetails });
+            const movieResult = await scrapePageDetails(firstMovieUrl);
+            return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
 
         } catch (error) {
             return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: error.message });
         }
     }
 
-    // 2. ක්‍රමය: ?url= මඟින් කෙලින්ම සෙවීම
     if (movieUrl) {
-        const movieDetails = await scrapePageDetails(movieUrl);
-        if (!movieDetails) {
-            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: "Failed to extract URL details." });
-        }
-        return res.json({ status: true, owner: "@KingPoddaModz", result: movieDetails });
+        const movieResult = await scrapePageDetails(movieUrl);
+        return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
     }
 
-    return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters. Use ?name= or ?url=" });
+    return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters." });
 });
 
-// 🎯 JSON Response එක පේළියෙන් පේළියට ලස්සනට (Pretty Print) බ්‍රවුසර් එකේ පෙන්වීමට:
 app.set('json spaces', 2); 
 
 app.listen(PORT, () => {
-    console.log(`🚀 API Server is fully active on port ${PORT}`);
+    console.log(`🚀 Perfect Direct Auto-Download API running on port ${PORT}`);
 });
 
