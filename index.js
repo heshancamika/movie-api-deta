@@ -155,23 +155,23 @@ app.get('/api/movie', async (req, res) => {
             });
 
             if (!firstMovieUrl) {
-                return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found." });
+                return res.status(404).json({ status: false, owner: "@Heshanmd", error: "No movies found." });
             }
 
             const movieResult = await scrapePageDetails(firstMovieUrl);
-            return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
+            return res.json({ status: true, owner: "@Heshanmd", result: movieResult });
 
         } catch (error) {
-            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: error.message });
+            return res.status(500).json({ status: false, owner: "@Heshanmd", error: error.message });
         }
     }
 
     if (movieUrl) {
         const movieResult = await scrapePageDetails(movieUrl);
-        return res.json({ status: true, owner: "@KingPoddaModz", result: movieResult });
+        return res.json({ status: true, owner: "@Heshanmd", result: movieResult });
     }
 
-    return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters." });
+    return res.status(400).json({ status: false, owner: "@Heshanmd", error: "Missing parameters." });
 });
 
 app.set('json spaces', 2); 
