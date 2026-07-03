@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 require('dotenv').config();
+const { delay, proto, generateWAMessageFromContent } = require("@whiskeysockets/baileys");
 
 const app = express();
 const PORT = 3005; 
