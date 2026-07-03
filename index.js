@@ -63,58 +63,45 @@ app.get('/api/movie', async (req, res) => {
         const $ = cheerio.load(response.data);
         const downloadLinks = [];
 
-        // Movie Title
+        // 🎯 Movie Title
         const title = $('h1.entry-title').text().trim() || 
                       $('h1').first().text().trim() || 
                       'Unknown Title';
 
-        // Method 1: cdn.sinhalasub.net links
-        $('a[href*="cdn.sinhalasub.net"]').each((i, el) => {
-            const href = $(el).attr('href');
-            let quality = 'Unknown';
-            let size = 'Unknown';
-            
-            let parent = $(el).parent();
-            for (let j = 0; j < 5; j++) {
-                if (parent.length === 0) break;
-                const parentText = parent.text().trim();
-                
-                const qualityMatch = parentText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p|FHD|HD|SD)/i);
-                if (qualityMatch) {
-                    quality = qualityMatch[0].trim();
-                }
-                
-                const sizeMatch = parentText.match(/([\d.]+)\s*(GB|MB)/i);
-                if (sizeMatch) {
-                    size = `${sizeMatch[1]} ${sizeMatch[2]}`;
-                }
-                
-                if (quality !== 'Unknown' && size !== 'Unknown') break;
-                parent = parent.parent();
+        console.log(`📌 Title: ${title}`);
+
+        // 🔥 ක්‍රමය 1: "Links" section එක හොයාගෙන ඊට පස්සේ tables parse කරන්න
+        // "Links" කියන heading එක හොයාගන්න
+        let linksSection = null;
+        $('h2, h3, h4, strong, b').each((i, el) => {
+            const text = $(el).text().trim();
+            if (text.toLowerCase().includes('links') || text.includes('Options')) {
+                linksSection = $(el).parent();
+                return false;
             }
-            
-            downloadLinks.push({
-                quality: quality,
-                size: size,
-                download_url: href
-            });
         });
 
-        // Method 2: Table links
-        if (downloadLinks.length === 0) {
-            $('table').each((i, table) => {
+        if (linksSection) {
+            console.log('🔍 Found Links section');
+            // Links section එකේ තියෙන tables හොයන්න
+            linksSection.find('table').each((i, table) => {
                 const rows = $(table).find('tr');
                 rows.each((j, row) => {
                     const cols = $(row).find('td');
                     if (cols.length >= 2) {
                         const quality = $(cols[0]).text().trim();
                         const size = $(cols[1]).text().trim();
-                        const link = $(row).find('a[href*="cdn.sinhalasub.net"]');
-                        if (link.length > 0) {
+                        
+                        // Quality එකේ FHD/HD/SD තියෙනවද check කරන්න
+                        if (quality.match(/(FHD|HD|SD|1080p|720p|480p)/i)) {
+                            // අපිට ඕනෙ මෙම row එකට අදාළ download link එක
+                            // sinhalasub.lk එකේ download links තියෙන්නේ JavaScript onclick events වල
+                            // ඒ නිසා අපිට ඒවා direct එකට ගන්න බැහැ
+                            // නමුත් අපිට ඒවායේ quality සහ size විතරක් ගන්න පුළුවන්
                             downloadLinks.push({
-                                quality: quality || 'Unknown',
-                                size: size || 'Unknown',
-                                download_url: link.attr('href')
+                                quality: quality,
+                                size: size,
+                                download_url: '⚠️ Download link is hidden. Please visit the page directly.'
                             });
                         }
                     }
@@ -122,16 +109,78 @@ app.get('/api/movie', async (req, res) => {
             });
         }
 
-        // Method 3: Fallback
+        // 🔥 ක්‍රමය 2: cdn.sinhalasub.net links හොයන්න (direct links)
         if (downloadLinks.length === 0) {
-            $('a').each((i, el) => {
+            console.log('🔍 Searching for cdn.sinhalasub.net links...');
+            $('a[href*="cdn.sinhalasub.net"]').each((i, el) => {
                 const href = $(el).attr('href');
-                if (href && (href.includes('download') || href.includes('cdn') || href.includes('movie'))) {
-                    downloadLinks.push({
-                        quality: 'Unknown',
-                        size: 'Unknown',
-                        download_url: href
-                    });
+                let quality = 'Unknown';
+                let size = 'Unknown';
+                
+                // Parent elements වලින් quality/size හොයන්න
+                let parent = $(el).parent();
+                for (let j = 0; j < 5; j++) {
+                    if (parent.length === 0) break;
+                    const parentText = parent.text().trim();
+                    
+                    const qualityMatch = parentText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p|FHD|HD|SD)/i);
+                    if (qualityMatch) {
+                        quality = qualityMatch[0].trim();
+                    }
+                    
+                    const sizeMatch = parentText.match(/([\d.]+)\s*(GB|MB)/i);
+                    if (sizeMatch) {
+                        size = `${sizeMatch[1]} ${sizeMatch[2]}`;
+                    }
+                    
+                    if (quality !== 'Unknown' && size !== 'Unknown') break;
+                    parent = parent.parent();
+                }
+                
+                downloadLinks.push({
+                    quality: quality,
+                    size: size,
+                    download_url: href
+                });
+            });
+        }
+
+        // 🔥 ක්‍රමය 3: onclick events වලින් links හොයන්න
+        if (downloadLinks.length === 0) {
+            console.log('🔍 Searching for onclick events...');
+            $('a[onclick]').each((i, el) => {
+                const onclick = $(el).attr('onclick');
+                if (onclick && onclick.includes('download')) {
+                    // Extract URL from onclick
+                    const urlMatch = onclick.match(/https?:\/\/[^\s\'"]+/);
+                    if (urlMatch) {
+                        downloadLinks.push({
+                            quality: 'Unknown',
+                            size: 'Unknown',
+                            download_url: urlMatch[0]
+                        });
+                    }
+                }
+            });
+        }
+
+        // 🔥 ක්‍රමය 4: window.location හෝ window.open links හොයන්න (script එකේ)
+        if (downloadLinks.length === 0) {
+            console.log('🔍 Searching in scripts...');
+            $('script').each((i, el) => {
+                const scriptContent = $(el).html();
+                if (scriptContent) {
+                    // Look for download URLs in script
+                    const urlMatches = scriptContent.match(/https?:\/\/cdn\.sinhalasub\.net\/[^\s\'"]+/g);
+                    if (urlMatches) {
+                        urlMatches.forEach(url => {
+                            downloadLinks.push({
+                                quality: 'Unknown',
+                                size: 'Unknown',
+                                download_url: url
+                            });
+                        });
+                    }
                 }
             });
         }
@@ -146,6 +195,9 @@ app.get('/api/movie', async (req, res) => {
             }
         });
 
+        console.log(`✅ Found ${uniqueLinks.length} download links`);
+
+        // ✅ Response
         res.json({
             status: true,
             owner: '@KingPoddaModz',
@@ -157,7 +209,7 @@ app.get('/api/movie', async (req, res) => {
                 {
                     quality: 'N/A',
                     size: 'N/A',
-                    download_url: 'No download links found. The page structure may have changed.'
+                    download_url: '⚠️ No download links found. The download links are hidden behind JavaScript.'
                 }
             ]
         });
