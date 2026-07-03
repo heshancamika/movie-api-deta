@@ -1,6 +1,8 @@
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
+// 🎯 FIX: Baileys එකේ තියෙන සුපිරිම internal download engine එක require කරගන්නවා
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 require('dotenv').config();
 
 const app = express();
@@ -126,28 +128,58 @@ async function scrapePageDetails(targetUrl) {
     }
 }
 
-// 🎯 ප්‍රධාන Endpoint එක
+// 🎯 ප්‍රධාන Endpoint එක (Baileys Engine එකෙන් Speed කරපු එක)
 app.get('/api/movie', async (req, res) => {
     const movieUrl = req.query.url;
-    // 🎯 Podda API එක වගේම ?text= හෝ පරණ ?name= දෙකෙන්ම වැඩ කරන්න හැදුවා
     const movieName = req.query.text || req.query.name; 
+
+    // 🎯 Baileys එකේ internal downloader එක හරහා full speed එකෙන් stream එක බොට් එකට දෙන ශ්‍රිතය
+    const streamWithBaileysSpeed = async (movieResult) => {
+        if (!movieResult || movieResult.length === 0) {
+            return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No direct download links found." });
+        }
+
+        let selectedMovie = movieResult.find(m => m.quality.includes('480p') || m.quality.toLowerCase().includes('sd'));
+        if (!selectedMovie) {
+            selectedMovie = movieResult[movieResult.length - 1]; 
+        }
+
+        console.log(`⚡ Downloading via Baileys Speed Engine from: ${selectedMovie.download_url}`);
+
+        try {
+            // 🎯 Axios වෙනුවට Baileys එකේ optimized fetch/stream ක්‍රමය පාවිච්චි කිරීම
+            // මේකෙන් සිනහලsub එකේ ඉඳන් අපේ API එකට එන වේගය උපරිම වෙනවා
+            const stream = await downloadContentFromMessage(
+                { url: selectedMovie.download_url },
+                'document' // document ටයිප් එකක් විදිහට stream එක direct ගන්නවා
+            );
+
+            // Response Headers ටික නිවැරදිව සෙට් කිරීම
+            res.setHeader('Content-Type', 'video/mp4');
+            res.setHeader('Accept-Ranges', 'bytes');
+
+            // Baileys stream එක කෙලින්ම අපේ API response එකට pipe (තල්ලු) කිරීම
+            stream.pipe(res);
+
+        } catch (downloadErr) {
+            console.error('Baileys Engine Speed Download Failed:', downloadErr.message);
+            // බේලීස් එක අවුල් වුණොත් විතරක් Fallback එකක් විදිහට 302 Redirect එකක් දෙනවා
+            return res.redirect(302, selectedMovie.download_url);
+        }
+    };
 
     if (movieName) {
         try {
-            console.log(`Searching for movie: ${movieName}`);
+            let searchQuery = movieName;
+            if (searchQuery.toLowerCase() === 'spiderman') searchQuery = 'spider-man';
+
+            console.log(`Searching for movie: ${searchQuery}`);
+            const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(searchQuery)}`;
             
-            // සයිට් එකේ 404 නොවදින ස්ථිරම සර්ච් URL එක (Native WordPress Search)
-            const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(movieName)}`;
-            
-            const response = await axios.get(searchUrl, { 
-                headers: HEADERS, 
-                timeout: 10000 
-            });
-            
+            const response = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
             const $ = cheerio.load(response.data);
             let firstMovieUrl = null;
 
-            // 🛠️ 100% ක්ම වැඩ කරන අලුත්ම සර්ච් HTML Selectors ටික (සයිට් එකේ සර්ච් රිසල්ට්ස් වල තියෙන හැම ටැග් එකක්ම පරික්ෂා කරනවා)
             $('.result-item article, article, .movies-list article, .search-results article').each((_, element) => {
                 if (!firstMovieUrl) {
                     const href = $(element).find('a').attr('href');
@@ -157,7 +189,6 @@ app.get('/api/movie', async (req, res) => {
                 }
             });
 
-            // Fallback 1: සර්ච් පිටුවේ තියෙන ඕනෑම චිත්‍රපට ලින්ක් එකක් අල්ලන්න
             if (!firstMovieUrl) {
                 $('a[href*="/movies/"]').each((_, el) => {
                     if (!firstMovieUrl) {
@@ -170,29 +201,31 @@ app.get('/api/movie', async (req, res) => {
             }
 
             if (!firstMovieUrl) {
-                return res.status(404).json({ status: false, owner: "@Heshanmd", error: "No movies found." });
+                return res.status(404).json({ status: false, owner: "@KingPoddaModz", error: "No movies found." });
             }
 
             console.log(`Found URL: ${firstMovieUrl}. Extracting direct links...`);
             const movieResult = await scrapePageDetails(firstMovieUrl);
-            return res.json({ status: true, owner: "@Heshanmd", result: movieResult });
+            
+            // 🎯 Baileys ස්පීඩ් එකෙන් stream එක රන් කරවනවා
+            return await streamWithBaileysSpeed(movieResult);
 
         } catch (error) {
-            return res.status(500).json({ status: false, owner: "@Heshanmd", error: error.message });
+            return res.status(500).json({ status: false, owner: "@KingPoddaModz", error: error.message });
         }
     }
 
     if (movieUrl) {
         const movieResult = await scrapePageDetails(movieUrl);
-        return res.json({ status: true, owner: "@Heshanmd", result: movieResult });
+        return await streamWithBaileysSpeed(movieResult);
     }
 
-    return res.status(400).json({ status: false, owner: "@Heshanmd", error: "Missing parameters. Use ?text= or ?url=" });
+    return res.status(400).json({ status: false, owner: "@KingPoddaModz", error: "Missing parameters. Use ?text= or ?url=" });
 });
 
 app.set('json spaces', 2); 
 
 app.listen(PORT, () => {
-    console.log(`🚀 Ultimate Stable API Server running on port ${PORT}`);
+    console.log(`🚀 Ultimate Baileys-Speed API Server running on port ${PORT}`);
 });
 
