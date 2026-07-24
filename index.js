@@ -3,7 +3,6 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const https = require('https');
 const compression = require('compression');
-const { pLimit } = require('p-limit');
 const NodeCache = require('node-cache');
 require('dotenv').config();
 
@@ -13,13 +12,11 @@ app.set('json spaces', 2);
 
 const PORT = process.env.PORT || 3005;
 
-// -------------------- CACHE SYSTEM (Auto Cleanup) --------------------
-// 🎯 TTL = 5 minutes (300 seconds), check period = 60 seconds
-// මෙයින් පරණ data auto අයින් වෙනවා, RAM 600MB ඉතිරි කරනවා
+// -------------------- CACHE SYSTEM --------------------
 const cache = new NodeCache({ 
-    stdTTL: 300,        // තත්පර 300 = මිනිත්තු 5
-    checkperiod: 60,    // සෑම තත්පර 60කට වරක් පරණ දේවල් cleanup වෙනවා
-    useClones: false    // Memory ඉතිරි කරන්න
+    stdTTL: 300,
+    checkperiod: 60,
+    useClones: false
 });
 
 // -------------------- COOKIES සහ HEADERS --------------------
@@ -56,8 +53,42 @@ const highSpeedAgent = new https.Agent({
     freeSocketTimeout: 30000 
 });
 
-// 🎯 එකවර Request 5 බැගින්
-const limit = pLimit(5);
+// -------------------- Concurrency Control (p-limit වෙනුවට) --------------------
+// 🎯 මෙය p-limit එකේ වැඩේම කරනවා, එකවර request 5 බැගින්
+async function asyncPool(concurrency, items, handler) {
+    const results = [];
+    const queue = [...items];
+    let active = 0;
+    let index = 0;
+
+    return new Promise((resolve) => {
+        const next = async () => {
+            if (index >= items.length && active === 0) {
+                resolve(results);
+                return;
+            }
+
+            while (active < concurrency && index < items.length) {
+                const currentIndex = index++;
+                active++;
+                
+                (async () => {
+                    try {
+                        const result = await handler(items[currentIndex]);
+                        results[currentIndex] = result;
+                    } catch (err) {
+                        results[currentIndex] = null;
+                    } finally {
+                        active--;
+                        next();
+                    }
+                })();
+            }
+        };
+
+        next();
+    });
+}
 
 // -------------------- Helper Functions --------------------
 async function getCdnLink(redirectUrl, retries = 2) {
@@ -81,7 +112,6 @@ async function getCdnLink(redirectUrl, retries = 2) {
         return cdnUrl;
     } catch (e) {
         if (retries > 0) {
-            console.log(`Retrying... (${retries} attempts left)`);
             await new Promise(resolve => setTimeout(resolve, 500));
             return getCdnLink(redirectUrl, retries - 1);
         }
@@ -102,9 +132,8 @@ function extractSize(url) {
     return "N/A";
 }
 
-// -------------------- ප්‍රධාන Scrape Function (Cached) --------------------
+// -------------------- ප්‍රධාන Scrape Function --------------------
 async function scrapePageDetails(targetUrl) {
-    // 🎯 Cache එකේ තියෙනවද බලන්න
     const cacheKey = `movie_${targetUrl}`;
     const cachedResult = cache.get(cacheKey);
     if (cachedResult) {
@@ -121,7 +150,6 @@ async function scrapePageDetails(targetUrl) {
         });
         const $ = cheerio.load(response.data);
 
-        // Links හොයන්න
         const rawLinks = [];
         $('a[href]').each((_, element) => {
             const href = $(element).attr('href');
@@ -143,13 +171,11 @@ async function scrapePageDetails(targetUrl) {
             return [];
         }
 
-        console.log(`⏳ Resolving ${rawLinks.length} links concurrently...`);
+        console.log(`⏳ Resolving ${rawLinks.length} links (max 5 concurrently)...`);
 
-        // 🚀 සමාන්තරව Request යවන්න
-        const promises = rawLinks.map(link => limit(() => getCdnLink(link)));
-        const cdnLinks = await Promise.all(promises);
+        // 🚀 මෙතනදී p-limit වෙනුවට asyncPool එක පාවිච්චි කරනවා
+        const cdnLinks = await asyncPool(5, rawLinks, getCdnLink);
 
-        // ප්‍රතිඵල හදන්න
         const results = [];
         for (const cdnLink of cdnLinks) {
             if (cdnLink) {
@@ -172,7 +198,6 @@ async function scrapePageDetails(targetUrl) {
             return 0;
         });
 
-        // 🎯 Cache එකේ save කරන්න (මිනිත්තු 5ක්)
         if (results.length > 0) {
             cache.set(cacheKey, results);
             console.log(`💾 Cached: ${targetUrl} (${results.length} links, TTL: 5 min)`);
@@ -187,7 +212,7 @@ async function scrapePageDetails(targetUrl) {
     }
 }
 
-// -------------------- Search Function (Cached) --------------------
+// -------------------- Search Function --------------------
 async function searchMovie(movieName) {
     const cacheKey = `search_${movieName.toLowerCase().trim()}`;
     const cachedResult = cache.get(cacheKey);
@@ -235,7 +260,6 @@ async function searchMovie(movieName) {
             return null;
         }
 
-        // 🎯 Search result එකත් cache කරන්න
         cache.set(cacheKey, firstMovieUrl);
         console.log(`💾 Search cached: ${movieName} -> ${firstMovieUrl}`);
 
@@ -247,7 +271,7 @@ async function searchMovie(movieName) {
     }
 }
 
-// -------------------- API Route එක --------------------
+// -------------------- API Route --------------------
 app.get('/api/movie', async (req, res) => {
     const startTime = Date.now();
     const movieUrl = req.query.url;
@@ -274,7 +298,6 @@ app.get('/api/movie', async (req, res) => {
         });
     };
 
-    // 🟢 Text එකක් ආවොත් (Search)
     if (movieName) {
         try {
             const foundUrl = await searchMovie(movieName);
@@ -298,7 +321,6 @@ app.get('/api/movie', async (req, res) => {
         }
     }
 
-    // 🟢 URL එකක් ආවොත්
     if (movieUrl) {
         const movieResult = await scrapePageDetails(movieUrl);
         return sendResponse(movieResult);
@@ -311,7 +333,7 @@ app.get('/api/movie', async (req, res) => {
     });
 });
 
-// -------------------- Cache Stats (Debugging) --------------------
+// -------------------- Cache Stats --------------------
 app.get('/api/cache/stats', (req, res) => {
     res.json({
         keys: cache.keys(),
