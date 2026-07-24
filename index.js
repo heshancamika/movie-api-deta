@@ -3,7 +3,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const https = require('https');
 const compression = require('compression');
-const pLimit = require('p-limit');
+const { pLimit } = require('p-limit');
 const NodeCache = require('node-cache');
 require('dotenv').config();
 
