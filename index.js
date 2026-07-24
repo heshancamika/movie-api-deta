@@ -12,14 +12,14 @@ app.set('json spaces', 2);
 
 const PORT = process.env.PORT || 3005;
 
-// -------------------- CACHE SYSTEM --------------------
+// -------------------- CACHE (TTL 10 minutes) --------------------
 const cache = new NodeCache({ 
-    stdTTL: 300,
-    checkperiod: 60,
+    stdTTL: 600,        // විනාඩි 10
+    checkperiod: 120,
     useClones: false
 });
 
-// -------------------- COOKIES සහ HEADERS --------------------
+// -------------------- COOKIES --------------------
 const COOKIES = {
     "_ga_03W6RSCJV1": process.env._GA_03W6RSCJV1,
     "s9ifs0idfjlwfie32dekl": process.env.S9IFS0IDFJLVFIE32DEKL,
@@ -45,7 +45,6 @@ const HEADERS = {
     "Cookie": cookieString
 };
 
-// 🚀 High-Speed Agent
 const highSpeedAgent = new https.Agent({ 
     keepAlive: true, 
     maxSockets: 100, 
@@ -53,31 +52,26 @@ const highSpeedAgent = new https.Agent({
     freeSocketTimeout: 30000 
 });
 
-// -------------------- Concurrency Control (p-limit වෙනුවට) --------------------
-// 🎯 මෙය p-limit එකේ වැඩේම කරනවා, එකවර request 5 බැගින්
+// -------------------- Concurrency (එකවර 10 බැගින්) --------------------
 async function asyncPool(concurrency, items, handler) {
     const results = [];
-    const queue = [...items];
-    let active = 0;
     let index = 0;
-
+    let active = 0;
+    
     return new Promise((resolve) => {
         const next = async () => {
             if (index >= items.length && active === 0) {
                 resolve(results);
                 return;
             }
-
             while (active < concurrency && index < items.length) {
-                const currentIndex = index++;
+                const i = index++;
                 active++;
-                
                 (async () => {
                     try {
-                        const result = await handler(items[currentIndex]);
-                        results[currentIndex] = result;
-                    } catch (err) {
-                        results[currentIndex] = null;
+                        results[i] = await handler(items[i]);
+                    } catch {
+                        results[i] = null;
                     } finally {
                         active--;
                         next();
@@ -85,109 +79,105 @@ async function asyncPool(concurrency, items, handler) {
                 })();
             }
         };
-
         next();
     });
 }
 
-// -------------------- Helper Functions --------------------
-async function getCdnLink(redirectUrl, retries = 2) {
+// -------------------- හරිම වේගවත් getCdnLink (timeout 5000, retry නැහැ) --------------------
+async function getCdnLink(redirectUrl) {
     try {
         if (!redirectUrl || !redirectUrl.includes('/links/')) return null;
-
+        
         const res = await axios.get(redirectUrl, { 
             headers: HEADERS, 
-            timeout: 8000,
+            timeout: 5000,        // 🎯 8s -> 5s
             httpsAgent: highSpeedAgent 
         });
         const $ = cheerio.load(res.data);
         
         let cdnUrl = null;
-        $('a').each((_, el) => {
+        $('a[href*="cdn.sinhalasub.net"]').each((_, el) => {
             const href = $(el).attr('href');
-            if (href && href.includes('cdn.sinhalasub.net')) {
+            if (href) {
                 cdnUrl = href;
+                return false; // break
             }
         });
         return cdnUrl;
     } catch (e) {
-        if (retries > 0) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            return getCdnLink(redirectUrl, retries - 1);
-        }
-        return null;
+        return null; // retry නැහැ, වේගයට
     }
 }
 
 function extractSize(url) {
     if (!url) return "N/A";
-    const decodedUrl = decodeURIComponent(url);
-    const matches = decodedUrl.match(/(?:_|\s|-)(\d+(?:\.\d+)?\s*(?:GB|MB|gb|mb))/);
-    if (matches) {
-        return matches[1].toUpperCase();
-    }
-    if (url.includes('1080p')) return "2.5 GB - 3.5 GB";
-    if (url.includes('720p')) return "1.2 GB - 1.8 GB";
-    if (url.includes('480p')) return "500 MB - 900 MB";
+    const decoded = decodeURIComponent(url);
+    const match = decoded.match(/(\d+(?:\.\d+)?)\s*(GB|MB)/i);
+    if (match) return `${match[1]} ${match[2].toUpperCase()}`;
+    if (url.includes('1080p')) return "2.5 - 3.5 GB";
+    if (url.includes('720p')) return "1.2 - 1.8 GB";
+    if (url.includes('480p')) return "500 - 900 MB";
     return "N/A";
 }
 
-// -------------------- ප්‍රධාන Scrape Function --------------------
+// -------------------- Scrape (වේගවත්ම) --------------------
 async function scrapePageDetails(targetUrl) {
     const cacheKey = `movie_${targetUrl}`;
-    const cachedResult = cache.get(cacheKey);
-    if (cachedResult) {
-        console.log(`🔄 Cache එකෙන් ගත්තා: ${targetUrl}`);
-        return cachedResult;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+        console.log(`🔄 Cache: ${targetUrl}`);
+        return cached;
     }
 
     try {
         console.log(`⏳ Scraping: ${targetUrl}`);
         const response = await axios.get(targetUrl, { 
             headers: HEADERS, 
-            timeout: 15000, 
+            timeout: 12000, 
             httpsAgent: highSpeedAgent 
         });
         const $ = cheerio.load(response.data);
 
+        // 🎯 DLServer-01 තියෙන links විතරක් ගන්න (අනිත් ඒවා මග හරින්න)
         const rawLinks = [];
-        $('a[href]').each((_, element) => {
-            const href = $(element).attr('href');
-            const text = $(element).text().trim();
-            if (href && href.includes('/links/') && 
-                (text.includes('DLServer-01') || text.toLowerCase().includes('server-01'))) {
+        $('a[href*="/links/"]').each((_, el) => {
+            const href = $(el).attr('href');
+            const text = $(el).text().toLowerCase();
+            if (href && (text.includes('dlserver-01') || text.includes('server-01'))) {
                 rawLinks.push(href);
             }
         });
 
+        // DLServer නැතිනම්, පළමු 5 links විතරක් ගන්න
         if (rawLinks.length === 0) {
-            $('a[href*="/links/"]').each((_, element) => {
-                const href = $(element).attr('href');
-                if (href) rawLinks.push(href);
+            $('a[href*="/links/"]').each((_, el) => {
+                const href = $(el).attr('href');
+                if (href && rawLinks.length < 5) {
+                    rawLinks.push(href);
+                }
             });
         }
 
-        if (rawLinks.length === 0) {
-            return [];
-        }
+        if (rawLinks.length === 0) return [];
 
-        console.log(`⏳ Resolving ${rawLinks.length} links (max 5 concurrently)...`);
-
-        // 🚀 මෙතනදී p-limit වෙනුවට asyncPool එක පාවිච්චි කරනවා
-        const cdnLinks = await asyncPool(5, rawLinks, getCdnLink);
+        console.log(`⏳ Resolving ${rawLinks.length} links (concurrent)...`);
+        
+        // 🎯 එකවර 10 බැගින්
+        const cdnLinks = await asyncPool(10, rawLinks, getCdnLink);
 
         const results = [];
-        for (const cdnLink of cdnLinks) {
-            if (cdnLink) {
-                let quality = "HD / Other";
-                if (cdnLink.toLowerCase().includes('1080p')) quality = "FHD 1080p";
-                else if (cdnLink.toLowerCase().includes('720p')) quality = "HD 720p";
-                else if (cdnLink.toLowerCase().includes('480p')) quality = "SD 480p";
-
-                const size = extractSize(cdnLink);
-                if (!results.some(r => r.download_url === cdnLink)) {
-                    results.push({ quality, size, download_url: cdnLink });
-                }
+        for (const cdn of cdnLinks) {
+            if (cdn && !results.some(r => r.download_url === cdn)) {
+                let quality = "HD";
+                if (cdn.includes('1080p')) quality = "FHD 1080p";
+                else if (cdn.includes('720p')) quality = "HD 720p";
+                else if (cdn.includes('480p')) quality = "SD 480p";
+                
+                results.push({
+                    quality,
+                    size: extractSize(cdn),
+                    download_url: cdn
+                });
             }
         }
 
@@ -200,137 +190,97 @@ async function scrapePageDetails(targetUrl) {
 
         if (results.length > 0) {
             cache.set(cacheKey, results);
-            console.log(`💾 Cached: ${targetUrl} (${results.length} links, TTL: 5 min)`);
+            console.log(`💾 Cached: ${results.length} links`);
         }
 
-        console.log(`✅ Found ${results.length} direct links.`);
         return results;
 
     } catch (err) {
-        console.error(`❌ Scraping failed: ${err.message}`);
+        console.error(`❌ Error: ${err.message}`);
         return [];
     }
 }
 
-// -------------------- Search Function --------------------
+// -------------------- Search (වේගවත්) --------------------
 async function searchMovie(movieName) {
     const cacheKey = `search_${movieName.toLowerCase().trim()}`;
-    const cachedResult = cache.get(cacheKey);
-    if (cachedResult) {
-        console.log(`🔄 Search cache එකෙන් ගත්තා: ${movieName}`);
-        return cachedResult;
-    }
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
 
     try {
-        let searchQuery = movieName.trim();
-        if (searchQuery.toLowerCase() === 'spiderman') searchQuery = 'spider-man';
-
-        console.log(`🔍 Searching for: ${searchQuery}`);
-        const searchUrl = `https://sinhalasub.lk/?s=${encodeURIComponent(searchQuery)}`;
+        let query = movieName.trim();
+        if (query.toLowerCase() === 'spiderman') query = 'spider-man';
         
-        const response = await axios.get(searchUrl, { 
+        const url = `https://sinhalasub.lk/?s=${encodeURIComponent(query)}`;
+        const response = await axios.get(url, { 
             headers: HEADERS, 
-            timeout: 10000, 
+            timeout: 8000,
             httpsAgent: highSpeedAgent 
         });
         const $ = cheerio.load(response.data);
-        let firstMovieUrl = null;
-
-        $('.result-item article, article, .movies-list article, .search-results article').each((_, element) => {
-            if (!firstMovieUrl) {
-                const href = $(element).find('a').attr('href');
-                if (href && href.includes('/movies/') && href !== "https://sinhalasub.lk/movies/") {
-                    firstMovieUrl = href;
-                }
+        
+        let movieUrl = null;
+        $('a[href*="/movies/"]').each((_, el) => {
+            const href = $(el).attr('href');
+            if (href && href !== "https://sinhalasub.lk/movies/") {
+                movieUrl = href;
+                return false;
             }
         });
 
-        if (!firstMovieUrl) {
-            $('a[href*="/movies/"]').each((_, el) => {
-                if (!firstMovieUrl) {
-                    const href = $(el).attr('href');
-                    if (href && href !== "https://sinhalasub.lk/movies/") {
-                        firstMovieUrl = href;
-                    }
-                }
-            });
+        if (movieUrl) {
+            cache.set(cacheKey, movieUrl);
+            console.log(`💾 Search cached: ${movieName}`);
         }
+        return movieUrl;
 
-        if (!firstMovieUrl) {
-            return null;
-        }
-
-        cache.set(cacheKey, firstMovieUrl);
-        console.log(`💾 Search cached: ${movieName} -> ${firstMovieUrl}`);
-
-        return firstMovieUrl;
-
-    } catch (error) {
-        console.error(`❌ Search failed: ${error.message}`);
+    } catch (err) {
+        console.error(`❌ Search error: ${err.message}`);
         return null;
     }
 }
 
 // -------------------- API Route --------------------
 app.get('/api/movie', async (req, res) => {
-    const startTime = Date.now();
+    const start = Date.now();
     const movieUrl = req.query.url;
-    const movieName = req.query.text || req.query.name; 
+    const movieName = req.query.text || req.query.name;
 
-    const sendResponse = (movieResult) => {
-        const responseTime = Date.now() - startTime;
-        console.log(`⏱️ Response time: ${responseTime}ms`);
-        
-        if (!movieResult || movieResult.length === 0) {
-            return res.status(404).json({ 
-                status: false, 
-                owner: "@KingPoddaModz", 
-                error: "No direct download links found.",
-                responseTime: `${responseTime}ms`
-            });
-        }
-        return res.json({ 
-            status: true, 
-            owner: "@KingPoddaModz", 
-            result: movieResult,
-            responseTime: `${responseTime}ms`,
-            cached: cache.get(`movie_${movieUrl || movieName}`) ? true : false
+    const send = (data, status = 200) => {
+        const time = Date.now() - start;
+        console.log(`⏱️ Response time: ${time}ms`);
+        res.status(status).json({
+            status: status === 200,
+            owner: "@KingPoddaModz",
+            ...data,
+            responseTime: `${time}ms`
         });
     };
 
     if (movieName) {
         try {
-            const foundUrl = await searchMovie(movieName);
-            if (!foundUrl) {
-                return res.status(404).json({ 
-                    status: false, 
-                    owner: "@KingPoddaModz", 
-                    error: "No movies found for your search." 
-                });
+            const found = await searchMovie(movieName);
+            if (!found) return send({ error: "Movie not found" }, 404);
+            
+            const result = await scrapePageDetails(found);
+            if (!result || result.length === 0) {
+                return send({ error: "No download links found" }, 404);
             }
-
-            const movieResult = await scrapePageDetails(foundUrl);
-            return sendResponse(movieResult);
-
-        } catch (error) {
-            return res.status(500).json({ 
-                status: false, 
-                owner: "@KingPoddaModz", 
-                error: error.message 
-            });
+            return send({ result });
+        } catch (err) {
+            return send({ error: err.message }, 500);
         }
     }
 
     if (movieUrl) {
-        const movieResult = await scrapePageDetails(movieUrl);
-        return sendResponse(movieResult);
+        const result = await scrapePageDetails(movieUrl);
+        if (!result || result.length === 0) {
+            return send({ error: "No download links found" }, 404);
+        }
+        return send({ result });
     }
 
-    return res.status(400).json({ 
-        status: false, 
-        owner: "@KingPoddaModz", 
-        error: "Missing parameters. Use ?text=MovieName OR ?url=sinhalasub.lk/movies/..." 
-    });
+    send({ error: "Use ?text=MovieName or ?url=..." }, 400);
 });
 
 // -------------------- Cache Stats --------------------
@@ -342,8 +292,8 @@ app.get('/api/cache/stats', (req, res) => {
     });
 });
 
-// -------------------- Server Start --------------------
+// -------------------- Start --------------------
 app.listen(PORT, () => {
-    console.log(`🚀 Movie API Server running on port ${PORT}`);
-    console.log(`💾 Cache TTL: 5 minutes, Cleanup: every 60 seconds`);
+    console.log(`🚀 API running on port ${PORT}`);
+    console.log(`💾 Cache TTL: 10 minutes`);
 });
